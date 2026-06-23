@@ -80,8 +80,8 @@ namespace ExtremeSignalAppCS.Controls
                     string stopLossVal = item.StopLossDisplay;
                     
                     string? typeObj = null;
-                    if (sigLabel.Contains("K高")) typeObj = "K高";
-                    else if (sigLabel.Contains("K低")) typeObj = "K低";
+                    if (item.Type == "做多") typeObj = "做多";
+                    else if (item.Type == "做空") typeObj = "做空";
                     
                     if (typeObj != null)
                     {
@@ -110,24 +110,44 @@ namespace ExtremeSignalAppCS.Controls
                     if (!string.IsNullOrEmpty(stopLossVal) && stopLossVal != "N/A" && !stopLossVal.Contains("已破"))
                     {
                         string? type = null;
-                        if (sigLabel.Contains("K高")) type = "high";
-                        else if (sigLabel.Contains("K低")) type = "low";
+                        if (item.Type == "做多") type = "high";
+                        else if (item.Type == "做空") type = "low";
 
                         if (type != null)
                         {
-                            var key = (type, stopLossVal);
-                            string timeStr = item.BestATimeDisplay;
-                            lock (_lock)
+                            bool isInstantlyBroken = false;
+                            double sl = 0;
+                            if (double.TryParse(currentPrice, out double cp) && double.TryParse(stopLossVal, out sl))
                             {
-                                if (!tempUnbrokenMap.ContainsKey(key))
-                                {
-                                    tempUnbrokenMap[key] = new HashSet<int>();
-                                }
-                                tempUnbrokenMap[key].Add(intMins);
+                                if (type == "low" && cp > sl) isInstantlyBroken = true;
+                                if (type == "high" && cp < sl) isInstantlyBroken = true;
+                            }
 
-                                if (!tempTimeMap.ContainsKey(key) || string.Compare(timeStr, tempTimeMap[key]) > 0)
+                            if (isInstantlyBroken)
+                            {
+                                // 引擎尚未判定破位，但目前報價已破，提早注入破位事件以維持趨勢統計正確
+                                double bt = ParseTimeStr(tradeTimeStr);
+                                if (bt < 999999)
                                 {
-                                    tempTimeMap[key] = timeStr;
+                                    timeline.Add((bt, tradeTimeStr, typeObj ?? "", -1, (int)sl, "即時破位"));
+                                }
+                            }
+                            else
+                            {
+                                var key = (type, stopLossVal);
+                                string timeStr = item.BestATimeDisplay;
+                                lock (_lock)
+                                {
+                                    if (!tempUnbrokenMap.ContainsKey(key))
+                                    {
+                                        tempUnbrokenMap[key] = new HashSet<int>();
+                                    }
+                                    tempUnbrokenMap[key].Add(intMins);
+
+                                    if (!tempTimeMap.ContainsKey(key) || string.Compare(timeStr, tempTimeMap[key]) > 0)
+                                    {
+                                        tempTimeMap[key] = timeStr;
+                                    }
                                 }
                             }
                         }
@@ -152,8 +172,8 @@ namespace ExtremeSignalAppCS.Controls
 
                 foreach (var ev in group)
                 {
-                    if (ev.Type == "K高") computedLongCount += ev.Delta;
-                    if (ev.Type == "K低") computedShortCount += ev.Delta;
+                    if (ev.Type == "做多") computedLongCount += ev.Delta;
+                    if (ev.Type == "做空") computedShortCount += ev.Delta;
                     lastReason = ev.Reason;
                     lastPrice = ev.Price;
                     timeStr = ev.TimeStr;
@@ -399,7 +419,7 @@ namespace ExtremeSignalAppCS.Controls
 
             if (shortEntries.Count > 0)
             {
-                var run = new Run($"═══ 做空（觀察 K 低） 共 {totalShortIntervals} 項 ═══\n")
+                var run = new Run($"═══ 做空 共 {totalShortIntervals} 項 ═══\n")
                 {
                     Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69)), // 亮綠
                     FontWeight = FontWeights.Bold
@@ -418,7 +438,7 @@ namespace ExtremeSignalAppCS.Controls
                 {
                     pContent.Inlines.Add(new Run("\n")); // 做空與做多之間空一行
                 }
-                var run = new Run($"═══ 做多（觀察 K 高） 共 {totalLongIntervals} 項 ═══\n")
+                var run = new Run($"═══ 做多 共 {totalLongIntervals} 項 ═══\n")
                 {
                     Foreground = new SolidColorBrush(Color.FromRgb(235, 75, 75)), // 亮紅
                     FontWeight = FontWeights.Bold

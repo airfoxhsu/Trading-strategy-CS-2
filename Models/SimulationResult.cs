@@ -37,7 +37,7 @@ namespace ExtremeSignalAppCS.Models
         private bool _isTargetPriceHighlighted;
 
         /// <summary>
-        /// 顯示標籤 (如 "N=25 觀察K低 18452")
+        /// 顯示標籤 (如 "N=25 抓新高反轉")
         /// </summary>
         public string DisplayTitle { get => _displayTitle; set => SetField(ref _displayTitle, value); }
 
@@ -122,12 +122,12 @@ namespace ExtremeSignalAppCS.Models
         // --- 核心狀態追蹤屬性 (不直接綁定 DataGrid，但用於引擎計算與破位檢測) ---
 
         /// <summary>
-        /// 訊號類型 ("K高" 或 "K低")
+        /// 訊號類型 ("做多" 或 "做空")
         /// </summary>
         public string Type { get => _type; set => SetField(ref _type, value); }
 
         /// <summary>
-        /// 觀察關卡價 (K低對應時段最高；K高對應時段最低)
+        /// 觀察關卡價 (做空對應時段最高；做多對應時段最低)
         /// </summary>
         public int ObsEntry { get => _obsEntry; set => SetField(ref _obsEntry, value); }
 

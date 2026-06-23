@@ -208,7 +208,7 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
                         <Border Grid.Row="0" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="0,0,0,1" Padding="4">
-                            <TextBlock x:Name="lblTotalStats" Text="總計: 觀察 K 低（做空）共 0 筆 等於 觀察 K 高（做多）共 0 筆" Foreground="#DCDCDC" FontWeight="Bold" Background="Transparent"/>
+                            <TextBlock x:Name="lblTotalStats" Text="總計: 做空 共 0 筆 等於 做多 共 0 筆" Foreground="#DCDCDC" FontWeight="Bold" Background="Transparent"/>
                         </Border>
                         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <ItemsControl x:Name="icIntervalStats" Padding="4">
@@ -379,13 +379,13 @@
                     <Label Content="最高觀察:" Foreground="White" VerticalAlignment="Center" Margin="12,0,4,0"/>
                     <ComboBox x:Name="cboObsHigh" Width="70" IsEditable="True" TextBoxBase.TextChanged="CboObsHigh_TextChanged" Margin="0,0,6,0"/>
 
-                    <Label Content="觀察 K 低:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
+                    <Label Content="做空觀察:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
                     <TextBox x:Name="txtObsHigh" Width="60" VerticalAlignment="Center" KeyDown="TxtObsHigh_KeyDown" Margin="0,0,12,0"/>
 
                     <Label Content="最低觀察:" Foreground="White" VerticalAlignment="Center" Margin="12,0,4,0"/>
                     <ComboBox x:Name="cboObsLow" Width="70" IsEditable="True" TextBoxBase.TextChanged="CboObsLow_TextChanged" Margin="0,0,6,0"/>
 
-                    <Label Content="觀察 K 高:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
+                    <Label Content="做多觀察:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
                     <TextBox x:Name="txtObsLow" Width="60" VerticalAlignment="Center" KeyDown="TxtObsLow_KeyDown" Margin="0,0,12,0"/>
 
                     <TextBlock x:Name="lblObsStatus" Text="觀察: 待設定" Foreground="Gray" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0"/>

@@ -70,12 +70,12 @@ namespace ExtremeSignalAppCS.Models
         public string Tag { get => _tag; set => SetField(ref _tag, value); }
 
         /// <summary>
-        /// 是否為當前觀察的 K低 (綠底白字)
+        /// 是否為當前做空的觀察區間 (綠底白字)
         /// </summary>
         public bool IsObsKLowHighlight { get => _isObsKLowHighlight; set => SetField(ref _isObsKLowHighlight, value); }
 
         /// <summary>
-        /// 是否為當前觀察的 K高 (紅底白字)
+        /// 是否為當前做多的觀察區間 (紅底白字)
         /// </summary>
         public bool IsObsKHighHighlight { get => _isObsKHighHighlight; set => SetField(ref _isObsKHighHighlight, value); }
 

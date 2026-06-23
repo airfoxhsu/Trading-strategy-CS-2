@@ -65,12 +65,12 @@ namespace ExtremeSignalAppCS.Helper
             {
                 run.Foreground = DefaultBrush;
             }
-            else if (line.Contains("最高") || line.Contains("K低"))
+            else if (line.Contains("最高") || line.Contains("做空"))
             {
                 run.Foreground = DownBrush; // Python 做空/綠色高亮
                 run.FontWeight = System.Windows.FontWeights.Bold;
             }
-            else if (line.Contains("最低") || line.Contains("K高"))
+            else if (line.Contains("最低") || line.Contains("做多"))
             {
                 run.Foreground = UpBrush;   // Python 做多/紅色高亮
                 run.FontWeight = System.Windows.FontWeights.Bold;

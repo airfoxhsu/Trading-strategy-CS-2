@@ -144,6 +144,7 @@ namespace ExtremeSignalAppCS
         // 用於「未破分K」點選後，跨執行緒狀態傳遞以便在更新完成後反白特定停損價位
         private string? _targetHighlightStopLossPrice;
         private bool _isProgrammaticSelection;
+        private bool _isNavigatingToHighlight;
         private bool _isRestoringSelection;
         private string _currentReplaySession = "日盤";
         private string? _lastAutofillKlineTime;
@@ -1535,7 +1536,7 @@ namespace ExtremeSignalAppCS
 
                     var res = new SimulationResult
                     {
-                        Type = d.IsTrigH ? "K低" : "K高",
+                        Type = d.IsTrigH ? "做空" : "做多",
                         DisplayTitle = displayTitle,
                         BestATime = d.ATime,
                         BestAPrice = d.PriceVal,
@@ -1566,11 +1567,11 @@ namespace ExtremeSignalAppCS
                         var notifyKey = (symbol, activeSession, d.Type, d.BestAPrice, d.BestATime);
                         if (_rtNotifiedKeys.Add(notifyKey))
                         {
-                            string side = d.Type == "K低" ? "top" : "bottom";
+                            string side = d.Type == "做空" ? "top" : "bottom";
                             string zoneStr = GetZoneStr(side, d.BestATime, d.BestAPrice, activeSession, quantParams);
 
                             string displayTitle = isContradiction ? d.DisplayTitle.Replace("未達標", "矛盾") : d.DisplayTitle;
-                            string dirText = d.Type == "K低" ? $"做空  {displayTitle}" : $"做多  {displayTitle}";
+                            string dirText = d.Type == "做空" ? $"做空  {displayTitle}" : $"做多  {displayTitle}";
                             string msgTitle = isContradiction ? "【極值矛盾】" : "【極值達標】";
                             string msg = $"{msgTitle}{symbol} {activeSession}\n" +
                                          $"方向：{dirText}\n" +
@@ -2147,12 +2148,13 @@ namespace ExtremeSignalAppCS
 
             foreach (var obs in _obsCollection)
             {
-                bool isKLow = obs.Type != null && obs.Type.Contains("K低");
-                bool isKHigh = obs.Type != null && obs.Type.Contains("K高");
+                bool isKLow = obs.Type != null && obs.Type.Contains("做空");
+                bool isKHigh = obs.Type != null && obs.Type.Contains("做多");
+
                 if (!isKLow && !isKHigh)
                 {
-                    isKLow = obs.DisplayTitle != null && obs.DisplayTitle.Contains("K低");
-                    isKHigh = obs.DisplayTitle != null && obs.DisplayTitle.Contains("K高");
+                    isKLow = obs.Type == "做空";
+                    isKHigh = obs.Type == "做多";
                 }
                 
                 if (!isKLow && !isKHigh) continue;
@@ -2897,7 +2899,7 @@ namespace ExtremeSignalAppCS
 
                         var res = new SimulationResult
                         {
-                            Type = isTop ? "K低" : "K高",
+                            Type = isTop ? "做空" : "做多",
                             DisplayTitle = statusStr,
                             BestATime = aTime,
                             BestAPrice = priceVal,
@@ -3823,8 +3825,8 @@ namespace ExtremeSignalAppCS
             int direction = 0;
             if (selected.Type != null)
             {
-                if (selected.Type.Contains("K高")) direction = 1; // 做多 (預設邏輯)
-                else if (selected.Type.Contains("K低")) direction = -1; // 做空
+                if (selected.Type.Contains("做多")) direction = 1; // 多 (預設停損低)
+                else if (selected.Type.Contains("做空")) direction = -1; // 空
             }
 
             if (selected.StopLossDisplay != "N/A" && selected.StopLossPrice > 0)
@@ -3836,7 +3838,72 @@ namespace ExtremeSignalAppCS
                 klineChart?.SetObserverStopLossPrice(null);
             }
 
-            double aTVal = TimeParser.ParseTime(selected.BestATime);
+            double aTVal = -1;
+            
+            if (selected.StopLossPrice > 0)
+            {
+                // 找出該停損價的源頭 A 點 (在當前趨勢中，最早出現此停損價的觀測項目)
+                SimulationResult? sourceObs = null;
+                int selectedIdx = _obsCollection.IndexOf(selected);
+                
+                if (selectedIdx >= 0)
+                {
+                    // 從當前選取的項目往前倒推，確保只在同一個連續趨勢內尋找
+                    for (int i = selectedIdx; i >= 0; i--)
+                    {
+                        var o = _obsCollection[i];
+                        
+                        // 若遇到不同方向，或停損價已經改變，代表跨越到了別的趨勢，停止往前找
+                        if (o.Type != selected.Type || o.StopLossPrice != selected.StopLossPrice)
+                        {
+                            break;
+                        }
+                        
+                        // 只要這個項目的 A 點價等於目標停損價，就暫存為可能的源頭
+                        // 因為是往前找，最後存下來的一定是這個連續區塊裡「最早」發生的一筆
+                        if (o.BestAPrice == selected.StopLossPrice)
+                        {
+                            sourceObs = o;
+                        }
+                    }
+                }
+
+                // 防呆機制：若上述連續趨勢回溯找不到(例如跨日重啟或特殊邊界條件)
+                // 退回舊邏輯，但強制限制時間不能晚於選取項目，並改由近到遠尋找最接近的那個 A 點
+                if (sourceObs == null)
+                {
+                    double selectedTime = TimeParser.ParseTime(selected.BestATime);
+                    if (_currentSessionName == "夜盤" && selectedTime <= 18000.0) selectedTime += 86400.0;
+
+                    sourceObs = _obsCollection
+                        .Where(o => o.BestAPrice == selected.StopLossPrice && o.Type == selected.Type)
+                        .Where(o => {
+                            double t = TimeParser.ParseTime(o.BestATime);
+                            if (_currentSessionName == "夜盤" && t <= 18000.0) t += 86400.0;
+                            return t <= selectedTime;
+                        })
+                        .OrderByDescending(o => {
+                            double t = TimeParser.ParseTime(o.BestATime);
+                            if (_currentSessionName == "夜盤" && t <= 18000.0) t += 86400.0;
+                            return t;
+                        })
+                        .FirstOrDefault();
+                }
+
+                if (sourceObs != null && !string.IsNullOrEmpty(sourceObs.BestATime))
+                {
+                    aTVal = TimeParser.ParseTime(sourceObs.BestATime);
+                }
+                else
+                {
+                    aTVal = TimeParser.ParseTime(selected.BestATime);
+                }
+            }
+            else
+            {
+                aTVal = TimeParser.ParseTime(selected.BestATime);
+            }
+
             if (_currentSessionName == "夜盤" && aTVal <= 18000.0) aTVal += 86400.0;
             if (aTVal <= 0) return;
 
@@ -3875,17 +3942,29 @@ namespace ExtremeSignalAppCS
                 catch { }
             }
 
-            if (targetRowIdx >= 1)
+            if (targetRowIdx >= 0)
             {
-                // 對焦點為該行的前一根 (原版 target_k_row = target_row - 1 完美對焦連動)
-                int targetKlineRow = targetRowIdx - 1;
+                // 因為我們現在 A 點是盤中即時偵測，所以直接對準當前這根 K 棒
+                int targetKlineRow = targetRowIdx;
                 
+                // 暫時抑制 DgKline 的預設選擇連動，讓我們可以手動指定要對焦的價格 (停損價)
+                bool wasProgrammatic = _isProgrammaticSelection;
+                _isProgrammaticSelection = true;
                 dgKline.SelectedIndex = targetKlineRow;
+                _isProgrammaticSelection = wasProgrammatic;
+                
+                int? priceToHighlight = (selected.StopLossPrice > 0) ? selected.StopLossPrice : null;
                 
                 // 如果是系統自動背景還原（例如即時行情更新），不要強制捲動畫面，讓使用者自由瀏覽
-                if (!_isRestoringSelection && !_isProgrammaticSelection)
+                // 如果是使用者點擊未破分K監控觸發的導航 (_isNavigatingToHighlight)，則強制捲動與聚焦
+                if (!_isRestoringSelection && (!_isProgrammaticSelection || _isNavigatingToHighlight))
                 {
                     dgKline.ScrollIntoView(_klineCollection[targetKlineRow]);
+                    klineChart?.FocusCandle(targetKlineRow, priceToHighlight);
+                }
+                else
+                {
+                    klineChart?.SetHighlightIndexOnly(targetKlineRow, priceToHighlight);
                 }
             }
         }
@@ -4027,7 +4106,7 @@ namespace ExtremeSignalAppCS
             if (e.Key == Key.Enter && int.TryParse(txtObsHigh.Text, out int val))
             {
                 _engine._obs_high_entry_price = val;
-                AppendLog($"【觀察】觀察 K 低手動設定為: {val}");
+                AppendLog($"【觀察】做空手動設定為: {val}");
             }
         }
 
@@ -4036,7 +4115,7 @@ namespace ExtremeSignalAppCS
             if (e.Key == Key.Enter && int.TryParse(txtObsLow.Text, out int val))
             {
                 _engine._obs_low_entry_price = val;
-                AppendLog($"【觀察】觀察 K 高手動設定為: {val}");
+                AppendLog($"【觀察】做多手動設定為: {val}");
             }
         }
 
@@ -4134,7 +4213,7 @@ namespace ExtremeSignalAppCS
 
                     if (lblTotalStats != null)
                     {
-                        lblTotalStats.Text = "總計: 觀察 K 低（做空）共 0 筆 等於 觀察 K 高（做多）共 0 筆";
+                        lblTotalStats.Text = "總計: 做空 共 0 筆 等於 做多 共 0 筆";
                         lblTotalStats.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#DCDCDC"));
                     }
 
@@ -4237,8 +4316,8 @@ namespace ExtremeSignalAppCS
 
             SimulationResult? targetObs = null;
 
-            var kHighs = matches.Where(o => o.Type != null && o.Type.Contains("K高")).ToList();
-            var kLows = matches.Where(o => o.Type != null && o.Type.Contains("K低")).ToList();
+            var kHighs = matches.Where(o => o.Type != null && o.Type.Contains("做多")).ToList();
+            var kLows = matches.Where(o => o.Type != null && o.Type.Contains("做空")).ToList();
 
             if (kHighs.Count > 0)
             {
@@ -4265,7 +4344,9 @@ namespace ExtremeSignalAppCS
                 targetObs.IsTargetPriceHighlighted = true; // 特別彰顯該欄位
                 
                 _isProgrammaticSelection = true;
+                _isNavigatingToHighlight = true;
                 dgObserver.SelectedItem = targetObs;
+                _isNavigatingToHighlight = false;
                 
                 // 第一層防護：強制更新 UI 佈局
                 dgObserver.UpdateLayout();
@@ -4674,8 +4755,8 @@ namespace ExtremeSignalAppCS
                 foreach (var r in results)
                 {
                     if (r.Tags.Contains("history") || r.Tags.Contains("annotation")) continue;
-                    if (r.DisplayTitle.Contains("K高")) longCount++;
-                    if (r.DisplayTitle.Contains("K低")) shortCount++;
+                    if (r.Type == "做多") longCount++;
+                    if (r.Type == "做空") shortCount++;
                 }
 
                 totalShort += shortCount;
@@ -4694,7 +4775,7 @@ namespace ExtremeSignalAppCS
                     IntervalName = $"{interval} 分K",
                     ShortCount = shortCount,
                     LongCount = longCount,
-                    DisplayText = $"{interval,2} 分K: 觀察 K 低（做空）共 {shortCount,2} 筆 {op} 觀察 K 高（做多）共 {longCount,2} 筆",
+                    DisplayText = $"{interval,2} 分K: 做空 共 {shortCount,2} 筆 {op} 做多 共 {longCount,2} 筆",
                     DisplayColor = color
                 });
             }
@@ -4709,15 +4790,15 @@ namespace ExtremeSignalAppCS
 
                 if (lblTotalStats != null)
                 {
-                    lblTotalStats.Text = $"總計: 觀察 K 低（做空）共 {totalShort} 筆 等於 觀察 K 高（做多）共 {totalLong} 筆";
+                    lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 等於 做多 共 {totalLong} 筆";
                     if (totalShort > totalLong)
                     {
-                        lblTotalStats.Text = $"總計: 觀察 K 低（做空）共 {totalShort} 筆 > 觀察 K 高（做多）共 {totalLong} 筆";
+                        lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 > 做多 共 {totalLong} 筆";
                         lblTotalStats.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#28A745"));
                     }
                     else if (totalLong > totalShort)
                     {
-                        lblTotalStats.Text = $"總計: 觀察 K 低（做空）共 {totalShort} 筆 < 觀察 K 高（做多）共 {totalLong} 筆";
+                        lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 < 做多 共 {totalLong} 筆";
                         lblTotalStats.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EB4B4B"));
                     }
                     else

@@ -1451,6 +1451,9 @@ namespace ExtremeSignalAppCS.Controls
             _isMouseInChart = true;
             _painter.HighlightPrice = price;
             _painter.HighlightIndex = index;
+            
+            _isLockedCrosshair = true;
+            _lockedCrosshairPrice = targetPrice;
         }
 
         /// <summary>
@@ -1480,6 +1483,16 @@ namespace ExtremeSignalAppCS.Controls
 
             _painter.HighlightPrice = price;
             _painter.HighlightIndex = index;
+
+            double targetPrice = price ?? (_candles[index].Open + _candles[index].Close) / 2.0;
+            double x = _painter.GetCanvasX(index, ActualWidth);
+            double y = _painter.GetCanvasY(targetPrice, ActualHeight);
+            
+            _crosshair.SetMousePos(new Point(x, y));
+            _lastHoverIndex = index;
+            _isMouseInChart = true;
+            _isLockedCrosshair = true;
+            _lockedCrosshairPrice = targetPrice;
         }
 
         /// <summary>
