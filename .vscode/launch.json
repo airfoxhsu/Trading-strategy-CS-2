@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Core Launch (WPF)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            // 使用 64 位元 dotnet 啟動器，並以參數 '--arch x86' 在後台拉起 32 位元環境，徹底繞過 VS Code 對 32 位元進程的啟動限制
+            "program": "C:\\Program Files\\dotnet\\dotnet.exe",
+            "args": [
+                "run",
+                "--arch",
+                "x86"
+            ],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

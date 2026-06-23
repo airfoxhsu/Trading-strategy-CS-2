@@ -1,0 +1,14 @@
+
+# C# projects
+bin/
+obj/
+*.log
+reports/
+Logs/
+scratch/
+config.json
+code.json
+*.dmp
+*.speedscope
+*.speedscope.json
+pstacks.txt
