@@ -203,10 +203,13 @@ namespace ExtremeSignalAppCS.Controls
                     // 畫最高/最低影線
                     dc.DrawLine(pen, new Point(x, highY), new Point(x, lowY));
                     
-                    // 畫開收實體
-                    double rectH = Math.Abs(closeY - openY);
-                    if (rectH < 1.0) rectH = 1.0;
-                    dc.DrawRectangle(brush, pen, new Rect(x - barW / 2, Math.Min(openY, closeY), barW, rectH));
+                    // 畫開收實體 (極致縮小降級：當寬度小於 3 px 時隱藏矩形)
+                    if (colW >= 3.0)
+                    {
+                        double rectH = Math.Abs(closeY - openY);
+                        if (rectH < 1.0) rectH = 1.0;
+                        dc.DrawRectangle(brush, pen, new Rect(x - barW / 2, Math.Min(openY, closeY), barW, rectH));
+                    }
                 }
             }
 
@@ -278,9 +281,12 @@ namespace ExtremeSignalAppCS.Controls
                 }
 
                 drawingContext.DrawLine(lpen, new Point(lx, lhighY), new Point(lx, llowY));
-                double lrectH = Math.Abs(lcloseY - lopenY);
-                if (lrectH < 1.0) lrectH = 1.0;
-                drawingContext.DrawRectangle(lbrush, lpen, new Rect(lx - barW / 2, Math.Min(lopenY, lcloseY), barW, lrectH));
+                if (colW >= 3.0)
+                {
+                    double lrectH = Math.Abs(lcloseY - lopenY);
+                    if (lrectH < 1.0) lrectH = 1.0;
+                    drawingContext.DrawRectangle(lbrush, lpen, new Rect(lx - barW / 2, Math.Min(lopenY, lcloseY), barW, lrectH));
+                }
 
                 // 5. 動態繪製可見範圍內的最高與最低價標示
                 DrawVisibleHighLow(drawingContext, w, h);
@@ -1233,9 +1239,7 @@ namespace ExtremeSignalAppCS.Controls
                     double relativeY = _dragStartPoint.Y / drawHeight; // 0 是頂部(最高價), 1 是底部(最低價)
                     double anchorPrice = _dragStartMaxY - relativeY * startRangeY;
 
-                    double scaleY = 1.0 + (deltaY / drawHeight) * 2.0; 
-                    if (scaleY < 0.1) scaleY = 0.1;
-                    if (scaleY > 10.0) scaleY = 10.0;
+                    double scaleY = Math.Exp(deltaY / 200.0);
                     
                     double rangeY = startRangeY * scaleY;
                     
@@ -1253,10 +1257,7 @@ namespace ExtremeSignalAppCS.Controls
                     double deltaX = mousePoint.X - _dragStartPoint.X;
                     double drawWidthLocal = Math.Max(1.0, w - KLinePainter.RightMargin);
                     
-                    // 往右拖 (deltaX > 0) 放大，往左拖縮小
-                    double scaleX = 1.0 - (deltaX / drawWidthLocal) * 1.5; 
-                    if (scaleX < 0.1) scaleX = 0.1;
-                    if (scaleX > 10.0) scaleX = 10.0;
+                    double scaleX = Math.Exp(-deltaX / 200.0);
                     
                     double startRangeX = _dragStartMaxX - _dragStartMinX;
                     double startRelativeX = _dragStartPoint.X / drawWidthLocal;
@@ -1264,9 +1265,9 @@ namespace ExtremeSignalAppCS.Controls
 
                     double newRangeX = startRangeX * scaleX;
                     
-                    double maxRangeByPixels = drawWidthLocal * 2.0;
+                    double maxRangeByPixels = drawWidthLocal / 2.0;
                     double maxRangeByCount = Math.Max(30.0, _candles.Count * 1.2);
-                    double maxRange = Math.Min(maxRangeByPixels, maxRangeByCount);
+                    double maxRange = Math.Max(maxRangeByPixels, maxRangeByCount);
                     if (newRangeX > maxRange) newRangeX = maxRange;
                     if (newRangeX < 5.0) newRangeX = 5.0;
 
@@ -1376,7 +1377,7 @@ namespace ExtremeSignalAppCS.Controls
                 // 在右側 Y 軸上滾輪 -> 縮放 Y 軸
                 double rangeY = _maxY - _minY;
                 double mousePrice = _maxY - (mouseY / drawHeight) * rangeY;
-                double zoomFactorY = e.Delta > 0 ? 0.85 : 1.15;
+                double zoomFactorY = Math.Exp(-e.Delta / 1200.0);
                 double newRangeY = rangeY * zoomFactorY;
                 
                 // 防呆，不縮到太小或太大
@@ -1396,14 +1397,16 @@ namespace ExtremeSignalAppCS.Controls
                 // 在圖表上滾輪 -> 只縮放 X 軸 (游標為錨點)，Y 軸依據自動對焦狀態決定
                 double rangeX = _maxX - _minX;
 
-                double zoomFactor = e.Delta > 0 ? 0.85 : 1.15;
+                double zoomFactor = Math.Exp(-e.Delta / 1200.0);
                 double newRange = rangeX * zoomFactor;
 
                 // 限制最大/最小縮放寬度
                 if (newRange < 5.0) newRange = 5.0;
                 
-                // 限制最小縮放 (最大可視範圍)：避免數量少時產生巨大空白，同時允許看見所有K線
-                double maxRange = Math.Max(30.0, _candles.Count * 1.2);
+                // 限制最小縮放 (最大可視範圍)：根據像素密度防護 (每根最少 2px)，並取其與資料量的較大值
+                double maxRangeByPixels = drawWidthLocal / 2.0;
+                double maxRangeByCount = Math.Max(30.0, _candles.Count * 1.2);
+                double maxRange = Math.Max(maxRangeByPixels, maxRangeByCount);
                 
                 if (newRange > maxRange) newRange = maxRange;
 
