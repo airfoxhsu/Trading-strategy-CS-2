@@ -24,8 +24,13 @@ namespace ExtremeSignalAppCS.Services
         public int? _obs_high_price { get; set; }
         public int? _obs_low_price { get; set; }
         
-        // 用於快取 K棒 狀態機計算結果 (與 Python _sim_kline_cache 一致)
-        private readonly Dictionary<string, List<SimulationResult>> _simKlineCache = new();
+        // 不再使用分 K 快取，改為全域連續掃描快取
+        private string _globalSimSessionKey = "";
+        private int _globalSearchStartShort = 0;
+        private int _globalSearchStartLong = 0;
+        private int? _globalLastTriggeredAPriceShort = null;
+        private int? _globalLastTriggeredAPriceLong = null;
+        private List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )> _globalAggregatedRawResults = new();
         
         // 專案根目錄
         private readonly string _appDir;
@@ -59,11 +64,7 @@ namespace ExtremeSignalAppCS.Services
         private string _pendingShortTimeLabelCache = "";
         private string _klineCacheSessionKey = "";
 
-        // 新增：模擬狀態機當前 K 棒進度快取
-        private string _simCurrentKlineKey = "";
-        private int _simSearchStartShort = 0;
-        private int _simSearchStartLong = 0;
-        private List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )> _simCurrentKlineResults = new();
+        // (已移除 _simCurrentKlineKey 等分 K 快取變數)
 
 
 
@@ -361,16 +362,21 @@ namespace ExtremeSignalAppCS.Services
             if (idx >= limit || idx < 0)
                 return (null, 0, null, 0, null, null, null, 0, 0, idx);
 
+            int extremePrice = trades[idx].Price;
             var preList = new List<TradeTick> { trades[idx] };
             int curr = idx - 1;
             while (curr >= 0 && preList.Count < (n + 1))
             {
+                if (postSide == TradeSide.Inner && trades[curr].Price > extremePrice)
+                    break;
+                if (postSide == TradeSide.Outer && trades[curr].Price < extremePrice)
+                    break;
+
                 if (trades[curr].Side == preSide) preList.Add(trades[curr]);
                 curr--;
             }
 
             var postList = new List<TradeTick> { trades[idx] };
-            int extremePrice = trades[idx].Price;
             curr = idx + 1;
 
             while (curr < limit && postList.Count < (n + 1))
@@ -432,6 +438,7 @@ namespace ExtremeSignalAppCS.Services
         {
             int totalTradesCount = maxCount < 0 ? trades.Count : maxCount;
             int idx = trigger.Index;
+            int extremePrice = trades[idx].Price;
 
             if (!trigger.PreScanned)
             {
@@ -444,6 +451,11 @@ namespace ExtremeSignalAppCS.Services
 
                 while (currPre >= 0 && preCount < (n + 1))
                 {
+                    if (postSide == TradeSide.Inner && trades[currPre].Price > extremePrice)
+                        break;
+                    if (postSide == TradeSide.Outer && trades[currPre].Price < extremePrice)
+                        break;
+
                     if (trades[currPre].Side == preSide)
                     {
                         preCount++;
@@ -461,7 +473,6 @@ namespace ExtremeSignalAppCS.Services
             }
 
             // 後向：增量接續掃描
-            int extremePrice = trades[idx].Price;
             int curr = trigger.ScanIndex;
             
             // 第一次進入，初始化 PostCount 等狀態
@@ -1096,289 +1107,158 @@ namespace ExtremeSignalAppCS.Services
         private List<SimulationResult> CalcSimulationResultsInternal(string session, IReadOnlyList<TradeTick> trades, List<KlineBar> klines, int obsN, IReadOnlyList<int>? dynamicNMap, int totalTradesCount, bool useDynamicN)
         {
             var results = new List<SimulationResult>();
+            if (totalTradesCount == 0) return results;
 
-            var klineBoundaries = new List<(double startT, double endT, int obsHighEntry, int obsLowEntry, int prevHigh, int prevLow)>();
-
-            for (int i = 1; i < klines.Count; i++)
+            string cacheKey = $"{session}_{obsN}_{useDynamicN}";
+            if (_globalSimSessionKey != cacheKey)
             {
-                var prevKline = klines[i - 1];
-                var currentKline = klines[i];
-
-                int obsHighEntry, obsLowEntry, prevHigh, prevLow;
-                try
-                {
-                    // 100% 還原 Python 邏輯：
-                    // 做空觀察關卡 (即前一日 K棒的最低點，Python 是 float(prev_kline[2]))
-                    // 做多觀察關卡 (即前一日 K棒的最高點，Python 是 float(prev_kline[1]))
-                    obsHighEntry = (int)currentKline.Low; // 已不再作為觀察關卡，保留相容性
-                    obsLowEntry = (int)currentKline.High; // 已不再作為觀察關卡，保留相容性
-                    prevHigh = (int)currentKline.High; // 做空防守
-                    prevLow = (int)currentKline.Low; // 做多防守
-                }
-                catch
-                {
-                    continue;
-                }
-
-                string timeLabel = currentKline.TimeLabel;
-                try
-                {
-                    var times = timeLabel.Split('~');
-                    var startParts = times[0].Split(':');
-                    int sh = int.Parse(startParts[0]);
-                    int sm = int.Parse(startParts[1]);
-                    double startT = (sh * 60 + sm) * 60.0;
-                    if (session == "夜盤" && (sh * 60 + sm) < 900) startT += 86400.0;
-
-                    var endParts = times[1].Split(':');
-                    int eh = int.Parse(endParts[0]);
-                    int em = int.Parse(endParts[1]);
-                    double endT = (eh * 60 + em) * 60.0;
-                    if (session == "夜盤" && (eh * 60 + em) < 900) endT += 86400.0;
-
-                    klineBoundaries.Add((startT, endT, obsHighEntry, obsLowEntry, prevHigh, prevLow));
-                }
-                catch { }
+                _globalSimSessionKey = cacheKey;
+                _globalSearchStartShort = 0;
+                _globalSearchStartLong = 0;
+                _globalLastTriggeredAPriceShort = null;
+                _globalLastTriggeredAPriceLong = null;
+                _globalAggregatedRawResults.Clear();
             }
 
-            if (klineBoundaries.Count == 0)
-                return results;
-
-            int totalBoundaries = klineBoundaries.Count;
-            int lastKnownStartIdx = 0;
-            int lastKnownEndIdx = 0;
-
-            var aggregatedRawResults = new List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )>();
-
-            for (int kbIdx = 0; kbIdx < totalBoundaries; kbIdx++)
+            // ════════ 做空路徑 ════════
+            while (_globalSearchStartShort < totalTradesCount)
             {
-                var (klineStart, klineEnd, obsHighEntry, obsLowEntry, prevHigh, prevLow) = klineBoundaries[kbIdx];
-                bool isLastKline = (kbIdx == totalBoundaries - 1);
-
-                // 智慧快取判定 (已收盤 K 棒結果直接讀快取，不重算)
-                // 重要：快取命中時，仍需加入 aggregatedRawResults 走第三階段停損狀態機，
-                //       不可直接 results.AddRange()，否則 DisplayTitle 與 StopLossDisplay 不會被正確填入！
-                string cacheKey = $"{klineStart}_{klineEnd}_{obsHighEntry}_{obsLowEntry}_{prevHigh}_{prevLow}_{obsN}";
-                string sessionCacheKey = $"{session}_{cacheKey}";
-                if (!isLastKline && _simKlineCache.TryGetValue(cacheKey, out var cachedRows))
+                int? lastSuccessfulBIdx = null;
+                for (int aIdx = _globalSearchStartShort; aIdx < totalTradesCount; aIdx++)
                 {
-                    foreach (var cached in cachedRows)
-                    {
-                        // 從快取的 SimulationResult 重建 (Key, Raw, Tags) tuple，確保第三階段能正常執行
-                        var cKey = (cached.BestAPrice, cached.BestATime, cached.ObsN);
-                        var cTags = new List<string>(cached.Tags); // 深拷貝 Tags 防止共用引用
-                        aggregatedRawResults.Add((cKey, cached, cTags));
-                    }
-                    continue;
-                }
-
-                // 尋找此 K 棒的 Tick 起始點與結束點 (使用 O(log N) 二元搜尋取代 O(N) 全量掃描)
-                int klineStartIdx = FindFirstTickIndexGEQ(trades, klineStart, totalTradesCount);
-                int klineEndTradeIdx = Math.Min(FindFirstTickIndexGEQ(trades, klineEnd, totalTradesCount), totalTradesCount);
-
-                lastKnownStartIdx = klineStartIdx;
-                lastKnownEndIdx = klineEndTradeIdx;
-
-                if (klineEndTradeIdx == 0) continue;
-
-                if (isLastKline)
-                {
-                    if (_simCurrentKlineKey != sessionCacheKey)
-                    {
-                        _simCurrentKlineKey = sessionCacheKey;
-                        _simSearchStartShort = klineStartIdx;
-                        _simSearchStartLong = klineStartIdx;
-                        _simCurrentKlineResults.Clear();
-                    }
-                }
-
-                var klineResults = new List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )>();
-
-                // ════════ 做空路徑 ════════
-                int searchStart = isLastKline ? _simSearchStartShort : klineStartIdx;
-                var newShortResults = new List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )>();
-                while (searchStart < klineEndTradeIdx)
-                {
-                    // 尋找過門後的最高價點 (疑似做空 A 點)
-                    var runningMaxes = new List<int>();
-                    int? currentMax = null;
-                    for (int j = searchStart; j < klineEndTradeIdx; j++)
-                    {
-                        if (currentMax == null || trades[j].Price > currentMax.Value)
-                        {
-                            currentMax = trades[j].Price;
-                            runningMaxes.Add(j);
-                        }
-                    }
-
-                    if (runningMaxes.Count == 0)
-                        break;
-
-                    int? lastSuccessfulBIdx = null;
-                    foreach (var aIdx in runningMaxes)
-                    {
-                        int aPrice = trades[aIdx].Price;
-                        int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
-                        var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, bIdx) =
-                            GetDurationsFull(trades, currentN, aIdx, TradeSide.Outer, TradeSide.Inner, klineEndTradeIdx);
-
-                        if (pre.HasValue && post.HasValue && actPre >= currentN && actPost >= currentN && post.Value < pre.Value && preVol < postVol && trigPrice.HasValue)
-                        {
-                            int lockedSLHigh = trades[klineStartIdx].Price;
-                            for (int k = klineStartIdx + 1; k <= aIdx; k++)
-                            {
-                                if (trades[k].Price > lockedSLHigh) lockedSLHigh = trades[k].Price;
-                            }
-
-                            var key = (aPrice, trades[aIdx].Time, currentN);
-                            if (!newShortResults.Any(k => k.Key == key) && (!isLastKline || !_simCurrentKlineResults.Any(k => k.Key == key)))
-                            {
-                                var raw = new SimulationResult
-                                {
-                                    Type = "做空",
-                                    ObsEntry = obsHighEntry,
-                                    BestATime = trades[aIdx].Time,
-                                    BestAPrice = aPrice,
-                                    TrigTime = trigTime ?? trades[aIdx].Time,
-                                    TrigPrice = trigPrice.Value.ToString(),
-                                    Pre = pre.HasValue ? $"{pre.Value:F4}-{preVol}" : "N/A",
-                                    Post = post.HasValue ? $"{post.Value:F4}-{postVol}" : "N/A",
-                                    PrevHigh = lockedSLHigh,
-                                    PrevLow = prevLow,
-                                    BIndex = bIdx,
-                                    ObsN = currentN,
-                                    StopLossPrice = lockedSLHigh
-                                };
-                                newShortResults.Add((key, raw, new List<string> { "obs_high" }));
-                            }
-                            lastSuccessfulBIdx = bIdx;
-                        }
-                    }
-
-                    if (lastSuccessfulBIdx.HasValue)
-                        searchStart = lastSuccessfulBIdx.Value + 1;
-                    else
-                        break;
-                }
-                
-                if (isLastKline)
-                {
-                    _simSearchStartShort = searchStart;
-                }
-
-                // ════════ 做多路徑 ════════
-                searchStart = isLastKline ? _simSearchStartLong : klineStartIdx;
-                var newLongResults = new List<( (int Price, string ATime, int ObsN) Key, SimulationResult Raw, List<string> Tags )>();
-                while (searchStart < klineEndTradeIdx)
-                {
-                    // 尋找過門後的最低價點 (疑似做多 A 點)
-                    var runningMins = new List<int>();
-                    int? currentMin = null;
-                    for (int j = searchStart; j < klineEndTradeIdx; j++)
-                    {
-                        if (currentMin == null || trades[j].Price < currentMin.Value)
-                        {
-                            currentMin = trades[j].Price;
-                            runningMins.Add(j);
-                        }
-                    }
-
-                    if (runningMins.Count == 0)
-                        break;
-
-                    int? lastSuccessfulBIdx = null;
-                    foreach (var aIdx in runningMins)
-                    {
-                        int aPrice = trades[aIdx].Price;
-                        int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
-                        var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, bIdx) =
-                            GetDurationsFull(trades, currentN, aIdx, TradeSide.Inner, TradeSide.Outer, klineEndTradeIdx);
-
-                        if (pre.HasValue && post.HasValue && actPre >= currentN && actPost >= currentN && post.Value < pre.Value && preVol < postVol && trigPrice.HasValue)
-                        {
-                            int lockedSLLow = trades[klineStartIdx].Price;
-                            for (int k = klineStartIdx + 1; k <= aIdx; k++)
-                            {
-                                if (trades[k].Price < lockedSLLow) lockedSLLow = trades[k].Price;
-                            }
-
-                            var key = (aPrice, trades[aIdx].Time, currentN);
-                            if (!newLongResults.Any(k => k.Key == key) && (!isLastKline || !_simCurrentKlineResults.Any(k => k.Key == key)))
-                            {
-                                var raw = new SimulationResult
-                                {
-                                    Type = "做多",
-                                    ObsEntry = obsLowEntry,
-                                    BestATime = trades[aIdx].Time,
-                                    BestAPrice = aPrice,
-                                    TrigTime = trigTime ?? trades[aIdx].Time,
-                                    TrigPrice = trigPrice.Value.ToString(),
-                                    Pre = pre.HasValue ? $"{pre.Value:F4}-{preVol}" : "N/A",
-                                    Post = post.HasValue ? $"{post.Value:F4}-{postVol}" : "N/A",
-                                    PrevHigh = prevHigh,
-                                    PrevLow = lockedSLLow,
-                                    BIndex = bIdx,
-                                    ObsN = currentN,
-                                    StopLossPrice = lockedSLLow
-                                };
-                                newLongResults.Add((key, raw, new List<string> { "obs_low" }));
-                            }
-                            lastSuccessfulBIdx = bIdx;
-                        }
-                    }
-
-                    if (lastSuccessfulBIdx.HasValue)
-                        searchStart = lastSuccessfulBIdx.Value + 1;
-                    else
-                        break;
-                }
-
-                // 寫入已收盤 K 棒的快取，免除下次的密集重度運算
-                // 注意：必須深拷貝所有欄位，包括 Tags，確保快取命中時第三階段狀態機能正確運作
-                if (!isLastKline)
-                {
-                    klineResults.AddRange(newShortResults);
-                    klineResults.AddRange(newLongResults);
-
-                    var cacheList = klineResults.Select(k =>
-                    {
-                        var copy = new SimulationResult
-                        {
-                            Type = k.Raw.Type,
-                            ObsEntry = k.Raw.ObsEntry,
-                            BestATime = k.Raw.BestATime,
-                            BestAPrice = k.Raw.BestAPrice,
-                            TrigTime = k.Raw.TrigTime,
-                            TrigPrice = k.Raw.TrigPrice,
-                            Pre = k.Raw.Pre,
-                            Post = k.Raw.Post,
-                            PrevHigh = k.Raw.PrevHigh,
-                            PrevLow = k.Raw.PrevLow,
-                            BIndex = k.Raw.BIndex,
-                            ObsN = k.Raw.ObsN,
-                            StopLossPrice = k.Raw.StopLossPrice
-                        };
-                        foreach (var tag in k.Tags)
-                            copy.Tags.Add(tag);
-                        return copy;
-                    }).ToList();
-                    _simKlineCache[cacheKey] = cacheList;
+                    int aPrice = trades[aIdx].Price;
                     
-                    aggregatedRawResults.AddRange(klineResults);
+                    if (_globalLastTriggeredAPriceShort.HasValue && aPrice == _globalLastTriggeredAPriceShort.Value)
+                    {
+                        continue; // 連續出現重複的 A 點價，只以第一根為主，後續跳過不測試
+                    }
+
+                    int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
+                    var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, lastIdx) =
+                        GetDurationsFull(trades, currentN, aIdx, TradeSide.Outer, TradeSide.Inner, totalTradesCount);
+
+                    if (pre.HasValue && post.HasValue && actPre >= currentN && actPost >= currentN && post.Value < pre.Value && preVol < postVol && trigPrice.HasValue)
+                    {
+                        var key = (aPrice, trades[aIdx].Time, currentN);
+                        if (!_globalAggregatedRawResults.Any(k => k.Key == key && k.Raw.Type == "做空"))
+                        {
+                            var raw = new SimulationResult
+                            {
+                                Type = "做空",
+                                ObsEntry = aPrice, // A點直接當作觀察基準
+                                BestATime = trades[aIdx].Time,
+                                BestAPrice = aPrice,
+                                TrigTime = trigTime ?? trades[aIdx].Time,
+                                TrigPrice = trigPrice.Value.ToString(),
+                                Pre = $"{pre.Value:F4}-{preVol}",
+                                Post = $"{post.Value:F4}-{postVol}",
+                                PrevHigh = aPrice, // 貪婪停損直接設為 A 點
+                                PrevLow = aPrice,
+                                BIndex = lastIdx,
+                                ObsN = currentN,
+                                StopLossPrice = aPrice // 停損防守價直接設為 A 點
+                            };
+                            _globalAggregatedRawResults.Add((key, raw, new List<string> { "obs_high" }));
+                            _globalLastTriggeredAPriceShort = aPrice; // 記錄以過濾後續同價 A 點
+                        }
+                        lastSuccessfulBIdx = lastIdx;
+                        break;
+                    }
+                    else if (actPre >= currentN && actPost < currentN && lastIdx == totalTradesCount - 1)
+                    {
+                        // 前段收集成功且未破價，後段未破價但已達 Tick 陣列盡頭（數量不足）
+                        // 代表這是一個「潛在的 A 點」，只是未來的 Tick 還沒進來，中斷迴圈等待下一次即時行情更新。
+                        break;
+                    }
                 }
+
+                if (lastSuccessfulBIdx.HasValue)
+                    _globalSearchStartShort = lastSuccessfulBIdx.Value + 1;
                 else
-                {
-                    _simSearchStartLong = searchStart; // The last searchStart was from Long path
-                    // _simSearchStartShort is already updated after its loop finishes!
-                    
-                    _simCurrentKlineResults.AddRange(newShortResults);
-                    _simCurrentKlineResults.AddRange(newLongResults);
-                    aggregatedRawResults.AddRange(_simCurrentKlineResults);
-                }
+                    break;
             }
+
+            // ════════ 做多路徑 ════════
+            while (_globalSearchStartLong < totalTradesCount)
+            {
+                int? lastSuccessfulBIdx = null;
+                for (int aIdx = _globalSearchStartLong; aIdx < totalTradesCount; aIdx++)
+                {
+                    int aPrice = trades[aIdx].Price;
+                    
+                    if (_globalLastTriggeredAPriceLong.HasValue && aPrice == _globalLastTriggeredAPriceLong.Value)
+                    {
+                        continue; 
+                    }
+
+                    int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
+                    var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, lastIdx) =
+                        GetDurationsFull(trades, currentN, aIdx, TradeSide.Inner, TradeSide.Outer, totalTradesCount);
+
+                    if (pre.HasValue && post.HasValue && actPre >= currentN && actPost >= currentN && post.Value < pre.Value && preVol < postVol && trigPrice.HasValue)
+                    {
+                        var key = (aPrice, trades[aIdx].Time, currentN);
+                        if (!_globalAggregatedRawResults.Any(k => k.Key == key && k.Raw.Type == "做多"))
+                        {
+                            var raw = new SimulationResult
+                            {
+                                Type = "做多",
+                                ObsEntry = aPrice, // A點直接當作觀察基準
+                                BestATime = trades[aIdx].Time,
+                                BestAPrice = aPrice,
+                                TrigTime = trigTime ?? trades[aIdx].Time,
+                                TrigPrice = trigPrice.Value.ToString(),
+                                Pre = $"{pre.Value:F4}-{preVol}",
+                                Post = $"{post.Value:F4}-{postVol}",
+                                PrevHigh = aPrice,
+                                PrevLow = aPrice, // 貪婪停損直接設為 A 點
+                                BIndex = lastIdx,
+                                ObsN = currentN,
+                                StopLossPrice = aPrice // 停損防守價直接設為 A 點
+                            };
+                            _globalAggregatedRawResults.Add((key, raw, new List<string> { "obs_low" }));
+                            _globalLastTriggeredAPriceLong = aPrice; // 記錄以過濾後續同價 A 點
+                        }
+                        lastSuccessfulBIdx = lastIdx;
+                        break;
+                    }
+                    else if (actPre >= currentN && actPost < currentN && lastIdx == totalTradesCount - 1)
+                    {
+                        break;
+                    }
+                }
+
+                if (lastSuccessfulBIdx.HasValue)
+                    _globalSearchStartLong = lastSuccessfulBIdx.Value + 1;
+                else
+                    break;
+            }
+
+            // 深拷貝至 aggregatedRawResults，避免第三階段狀態機修改污染全域快取
+            var aggregatedRawResults = _globalAggregatedRawResults.Select(k =>
+            {
+                var copy = new SimulationResult
+                {
+                    Type = k.Raw.Type,
+                    ObsEntry = k.Raw.ObsEntry,
+                    BestATime = k.Raw.BestATime,
+                    BestAPrice = k.Raw.BestAPrice,
+                    TrigTime = k.Raw.TrigTime,
+                    TrigPrice = k.Raw.TrigPrice,
+                    Pre = k.Raw.Pre,
+                    Post = k.Raw.Post,
+                    PrevHigh = k.Raw.PrevHigh,
+                    PrevLow = k.Raw.PrevLow,
+                    BIndex = k.Raw.BIndex,
+                    ObsN = k.Raw.ObsN,
+                    StopLossPrice = k.Raw.StopLossPrice
+                };
+                foreach (var tag in k.Tags)
+                    copy.Tags.Add(tag);
+                return (Key: k.Key, Raw: copy, Tags: copy.Tags.ToList());
+            }).ToList();
 
             // ════════ 階段三：時序停損時序狀態機 (100% 還原已破時序鎖定邏輯) ════════
-            // 按 B 點確立之 Tick 索引進行全局嚴格時序排序
             aggregatedRawResults.Sort((x, y) => x.Raw.BIndex.CompareTo(y.Raw.BIndex));
 
             string? currentMode = null;
@@ -1407,7 +1287,6 @@ namespace ExtremeSignalAppCS.Services
                     }
                 }
 
-                // 計算前往 B 點下一個 B 點 (Chrono 停損點) 與最後 Tick (Greedy 停損點) 之間
                 int nextBIndex = totalTradesCount;
                 int currentListIdx = aggregatedRawResults.FindIndex(k => k.Key == key);
                 if (currentListIdx + 1 < aggregatedRawResults.Count)
@@ -1472,7 +1351,6 @@ namespace ExtremeSignalAppCS.Services
 
                 if (isBrokenChrono)
                 {
-                    // 盤中該段停損若被觸發，狀態機重設，解開防線，下一個訊號將重新鎖定防守
                     currentMode = null;
                 }
 
@@ -1798,8 +1676,6 @@ namespace ExtremeSignalAppCS.Services
         /// </summary>
         public void ClearCache()
         {
-            _simKlineCache.Clear();
-
             // O(1) 狀態重置
             _lastTxfIdx = 0;
             _lastMxfIdx = 0;
@@ -1828,10 +1704,12 @@ namespace ExtremeSignalAppCS.Services
             _pendingShortTimeLabelCache = "";
             _klineCacheSessionKey = "";
 
-            _simCurrentKlineKey = "";
-            _simSearchStartShort = 0;
-            _simSearchStartLong = 0;
-            _simCurrentKlineResults.Clear();
+            _globalSimSessionKey = "";
+            _globalSearchStartShort = 0;
+            _globalSearchStartLong = 0;
+            _globalLastTriggeredAPriceShort = null;
+            _globalLastTriggeredAPriceLong = null;
+            _globalAggregatedRawResults.Clear();
         }
     }
 }

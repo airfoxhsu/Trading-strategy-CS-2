@@ -26,9 +26,10 @@ namespace ExtremeSignalAppCS.Controls
         
         private readonly object _lock = new();
 
-        // 快取當前未破停損價格 (Key: (Type[high/low], PriceStr) -> Value: 分K分鐘數集合)
-        private Dictionary<(string Type, string Price), HashSet<int>> _currentUnbrokenMap = new();
+        // 快取當前未破停損價格 (Key: (Type[high/low], PriceStr) -> Value: 訊號數量)
+        private Dictionary<(string Type, string Price), int> _currentUnbrokenMap = new();
         private Dictionary<(string Type, string Price), string> _currentUnbrokenTimeMap = new();
+        private Dictionary<(string Type, string Price), double> _brokenTimestamps = new();
         
         private class TrendEvent
         {
@@ -62,19 +63,17 @@ namespace ExtremeSignalAppCS.Controls
         {
             if (_engine == null || _parentApp == null) return;
 
-            var tempUnbrokenMap = new Dictionary<(string Type, string Price), HashSet<int>>();
+            var tempUnbrokenMap = new Dictionary<(string Type, string Price), int>();
             var tempTimeMap = new Dictionary<(string Type, string Price), string>();
             var timeline = new List<(double TVal, string TimeStr, string Type, int Delta, int? Price, string Reason)>();
 
-            foreach (var kvp in resultsMap)
-            {
-                int intMins = kvp.Key;
-                var results = kvp.Value;
+            // 我們已經完全棄用分K機制，所以直接取第一組結果作為唯一來源，避免重複統計
+            var uniqueResults = resultsMap.Values.FirstOrDefault() ?? new List<SimulationResult>();
 
-                foreach (var item in results)
-                {
-                    if (item.Tags.Contains("history") || item.Tags.Contains("annotation"))
-                        continue;
+            foreach (var item in uniqueResults)
+            {
+                if (item.Tags.Contains("history") || item.Tags.Contains("annotation"))
+                    continue;
 
                     string sigLabel = item.DisplayTitle;
                     string stopLossVal = item.StopLossDisplay;
@@ -98,7 +97,7 @@ namespace ExtremeSignalAppCS.Controls
                         
                         if (trigTVal < 999999)
                         {
-                            timeline.Add((trigTVal, item.TrigTime, typeObj, 1, tp, $"{intMins} 分 K"));
+                            timeline.Add((trigTVal, item.TrigTime, typeObj, 1, tp, "極值訊號"));
                         }
                         
                         if (breakTVal.HasValue && breakTVal.Value < 999999)
@@ -117,16 +116,29 @@ namespace ExtremeSignalAppCS.Controls
                         {
                             bool isInstantlyBroken = false;
                             double sl = 0;
+                            var key = (type, stopLossVal);
+                            
                             if (double.TryParse(currentPrice, out double cp) && double.TryParse(stopLossVal, out sl))
                             {
                                 if (type == "low" && cp > sl) isInstantlyBroken = true;
                                 if (type == "high" && cp < sl) isInstantlyBroken = true;
                             }
 
+                            if (!isInstantlyBroken && _brokenTimestamps.TryGetValue(key, out double brokenTime))
+                            {
+                                double itemTrigTime = ParseTimeStr(item.TrigTime);
+                                if (itemTrigTime <= brokenTime)
+                                {
+                                    isInstantlyBroken = true;
+                                }
+                            }
+
                             if (isInstantlyBroken)
                             {
-                                // 引擎尚未判定破位，但目前報價已破，提早注入破位事件以維持趨勢統計正確
+                                // 引擎尚未判定破位，但目前報價已破(或曾經已破)，提早注入破位事件以維持趨勢統計正確
                                 double bt = ParseTimeStr(tradeTimeStr);
+                                lock (_lock) { _brokenTimestamps[key] = bt; }
+                                
                                 if (bt < 999999)
                                 {
                                     timeline.Add((bt, tradeTimeStr, typeObj ?? "", -1, (int)sl, "即時破位"));
@@ -134,22 +146,20 @@ namespace ExtremeSignalAppCS.Controls
                             }
                             else
                             {
-                                var key = (type, stopLossVal);
                                 string timeStr = item.BestATimeDisplay;
                                 lock (_lock)
                                 {
                                     if (!tempUnbrokenMap.ContainsKey(key))
                                     {
-                                        tempUnbrokenMap[key] = new HashSet<int>();
+                                        tempUnbrokenMap[key] = 0;
                                     }
-                                    tempUnbrokenMap[key].Add(intMins);
+                                    tempUnbrokenMap[key]++;
 
                                     if (!tempTimeMap.ContainsKey(key) || string.Compare(timeStr, tempTimeMap[key]) > 0)
                                     {
                                         tempTimeMap[key] = timeStr;
                                     }
                                 }
-                            }
                         }
                     }
                 }
@@ -239,9 +249,11 @@ namespace ExtremeSignalAppCS.Controls
 
                 if (brokenKeys.Count > 0)
                 {
+                    double breakTime = ParseTimeStr(tradeTimeStr);
                     foreach (var k in brokenKeys)
                     {
                         _currentUnbrokenMap.Remove(k);
+                        _brokenTimestamps[k] = breakTime;
                     }
                     UpdateUI(price.ToString(), tradeTimeStr);
                 }
@@ -301,26 +313,23 @@ namespace ExtremeSignalAppCS.Controls
 
             txtDisplay.Document.Blocks.Clear();
 
-            var shortEntries = new List<(int count, string price, string intervalsStr, string timeStr)>();
-            var longEntries = new List<(int count, string price, string intervalsStr, string timeStr)>();
+            var shortEntries = new List<(int count, string price, string timeStr)>();
+            var longEntries = new List<(int count, string price, string timeStr)>();
 
             lock (_lock)
             {
                 foreach (var kvp in _currentUnbrokenMap)
                 {
                     var (sigType, priceVal) = kvp.Key;
-                    var sortedIntervals = kvp.Value.ToList();
-                    sortedIntervals.Sort();
-                    string intervalsStr = string.Join("、", sortedIntervals);
                     string timeStr = _currentUnbrokenTimeMap.TryGetValue(kvp.Key, out var t) ? t : "";
 
                     if (sigType == "low")
                     {
-                        shortEntries.Add((kvp.Value.Count, priceVal, intervalsStr, timeStr));
+                        shortEntries.Add((kvp.Value, priceVal, timeStr));
                     }
                     else if (sigType == "high")
                     {
-                        longEntries.Add((kvp.Value.Count, priceVal, intervalsStr, timeStr));
+                        longEntries.Add((kvp.Value, priceVal, timeStr));
                     }
                 }
             }
@@ -343,13 +352,8 @@ namespace ExtremeSignalAppCS.Controls
             int totalShortIntervals = shortEntries.Sum(x => x.count);
             int totalLongIntervals = longEntries.Sum(x => x.count);
 
-            int totalN = totalShortIntervals + totalLongIntervals;
-            int m1 = -1, m2 = -1;
-            if (totalN > 0)
-            {
-                m1 = totalN % 2 == 1 ? (totalN + 1) / 2 : totalN / 2;
-                m2 = totalN % 2 == 1 ? (totalN + 1) / 2 : (totalN / 2) + 1;
-            }
+            int maxShortCount = shortEntries.Count > 0 ? shortEntries.Max(x => x.count) : -1;
+            int maxLongCount = longEntries.Count > 0 ? longEntries.Max(x => x.count) : -1;
 
             // 更新統計顯示條
             lblSummaryShort.Text = $"做空共有 {totalShortIntervals} 項";
@@ -359,19 +363,12 @@ namespace ExtremeSignalAppCS.Controls
             // 使用單一 Paragraph 且設定 Margin=0 以精準控制換行距離
             var pContent = new Paragraph { Margin = new Thickness(0) };
 
-            int currentCumulative = 0;
-
-            void AppendUnbrokenEntry(Paragraph pContent, string price, string intervalsStr, string timeStr, int itemCount)
+            void AppendUnbrokenEntry(Paragraph pContent, string price, string timeStr, int itemCount, bool isMaxCount)
             {
-                int startIdx = currentCumulative + 1;
-                int endIdx = currentCumulative + itemCount;
-                bool isMedian = (m1 >= startIdx && m1 <= endIdx) || (m2 >= startIdx && m2 <= endIdx);
-                currentCumulative += itemCount;
-
                 var prefixLabel = new Run("  停損價: ");
                 var priceVal = new Run(price);
 
-                if (isMedian)
+                if (isMaxCount)
                 {
                     priceVal.Foreground = Brushes.Yellow;
                     priceVal.FontWeight = FontWeights.Bold;
@@ -383,38 +380,21 @@ namespace ExtremeSignalAppCS.Controls
                 pContent.Inlines.Add(prefixLabel);
                 pContent.Inlines.Add(priceVal);
                 pContent.Inlines.Add(new Run("  未破: "));
-                var intervals = intervalsStr.Split('、');
-                for (int i = 0; i < intervals.Length; i++)
+                var runCount = new Run($"{itemCount} 項")
                 {
-                    var intervalStr = intervals[i];
-                    if (int.TryParse(intervalStr, out int interval))
-                    {
-                        var runNum = new Run(intervalStr)
-                        {
-                            Cursor = System.Windows.Input.Cursors.Hand,
-                            Foreground = new SolidColorBrush(Color.FromRgb(0, 162, 237)), // #00A2ED
-                            FontWeight = FontWeights.Bold
-                        };
-                        runNum.MouseEnter += (s, e) => runNum.TextDecorations = TextDecorations.Underline;
-                        runNum.MouseLeave += (s, e) => runNum.TextDecorations = null;
-                        runNum.PreviewMouseLeftButtonDown += (s, e) => 
-                        {
-                            _parentApp?.HandleUnbrokenKIntervalClick(price, interval);
-                            e.Handled = true;
-                        };
-                        pContent.Inlines.Add(runNum);
-                    }
-                    else
-                    {
-                        pContent.Inlines.Add(new Run(intervalStr));
-                    }
-
-                    if (i < intervals.Length - 1)
-                    {
-                        pContent.Inlines.Add(new Run("、"));
-                    }
-                }
-                pContent.Inlines.Add(new Run($" 分K  ({timeStr})\n"));
+                    Cursor = System.Windows.Input.Cursors.Hand,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0, 162, 237)), // #00A2ED
+                    FontWeight = FontWeights.Bold
+                };
+                runCount.MouseEnter += (s, e) => runCount.TextDecorations = TextDecorations.Underline;
+                runCount.MouseLeave += (s, e) => runCount.TextDecorations = null;
+                runCount.PreviewMouseLeftButtonDown += (s, e) => 
+                {
+                    _parentApp?.FocusObserverOnStopLossPrice(price);
+                    e.Handled = true;
+                };
+                pContent.Inlines.Add(runCount);
+                pContent.Inlines.Add(new Run($"  ({timeStr})\n"));
             }
 
             if (shortEntries.Count > 0)
@@ -428,7 +408,8 @@ namespace ExtremeSignalAppCS.Controls
 
                 foreach (var item in shortEntries)
                 {
-                    AppendUnbrokenEntry(pContent, item.price, item.intervalsStr, item.timeStr, item.count);
+                    bool isMaxCount = item.count == maxShortCount;
+                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount);
                 }
             }
 
@@ -447,7 +428,8 @@ namespace ExtremeSignalAppCS.Controls
 
                 foreach (var item in longEntries)
                 {
-                    AppendUnbrokenEntry(pContent, item.price, item.intervalsStr, item.timeStr, item.count);
+                    bool isMaxCount = item.count == maxLongCount;
+                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount);
                 }
             }
 
@@ -736,6 +718,7 @@ namespace ExtremeSignalAppCS.Controls
             lock (_lock)
             {
                 _currentUnbrokenMap.Clear();
+                _brokenTimestamps.Clear();
             }
             txtDisplay.Document.Blocks.Clear();
             lblTitle.Text = "🛡️ 未破分 K 停損監控";
@@ -759,6 +742,7 @@ namespace ExtremeSignalAppCS.Controls
             lock (_lock)
             {
                 _currentUnbrokenMap.Clear();
+                _brokenTimestamps.Clear();
             }
 
             txtDisplay.Document.Blocks.Clear();

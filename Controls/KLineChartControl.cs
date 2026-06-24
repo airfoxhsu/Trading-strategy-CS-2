@@ -304,6 +304,32 @@ namespace ExtremeSignalAppCS.Controls
                 {
                     double osly = GetCanvasY(_observerStopLossPrice.Value, h);
                     drawingContext.DrawLine(_observerStopLossPen, new Point(0, osly), new Point(Math.Max(0, w - RightMargin), osly));
+
+                    // 繪製停損價標籤
+                    string labelText = _observerStopLossPrice.Value.ToString("F0");
+                    var formattedText = new FormattedText(
+                        labelText,
+                        CultureInfo.GetCultureInfo("en-us"),
+                        System.Windows.FlowDirection.LeftToRight,
+                        _typeface,
+                        14,
+                        Brushes.White,
+                        VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+                    double textX = Math.Max(0, w - RightMargin) - formattedText.Width - 6; // 靠右，在價位欄前
+                    double textY = osly - formattedText.Height - 4; // 在線上
+
+                    Brush bgBrush = new SolidColorBrush(Color.FromRgb(255, 0, 255)); // 預設桃紅底
+                    if (_highlightDirection == 1) // 做多停損，用紅底白字
+                        bgBrush = new SolidColorBrush(Color.FromRgb(235, 75, 75));
+                    else if (_highlightDirection == -1) // 做空停損，用綠底白字
+                        bgBrush = new SolidColorBrush(Color.FromRgb(40, 167, 69));
+
+                    var bgRect = new Rect(textX - 4, textY - 2, formattedText.Width + 8, formattedText.Height + 4);
+                    
+                    Pen borderPen = new Pen(new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)), 1.5); // 白色邊框
+                    drawingContext.DrawRoundedRectangle(bgBrush, borderPen, bgRect, 3.0, 3.0);
+                    drawingContext.DrawText(formattedText, new Point(textX, textY));
                 }
 
                 // 7. 繪製選取的 K 棒白色外框

@@ -134,7 +134,7 @@ namespace ExtremeSignalAppCS
         private string _currentSessionName = "日盤";
         private int _currentRealtimePort = 443;
         private int _currentTargetDays = 60;
-        private int _currentKlineInterval = 30;
+        private int _currentKlineInterval = 1;
         private int _currentObsN = 25;
         private int? _lastMxfPrice;
         private string _lastMxfTime = "";
@@ -4273,29 +4273,12 @@ namespace ExtremeSignalAppCS
         }
 
         /// <summary>
-        /// 處理未破分K監控表單中的分K數字點擊事件。
+        /// 處理未破停損總數點擊事件。
         /// </summary>
-        public void HandleUnbrokenKIntervalClick(string price, int interval)
+        public void FocusObserverOnStopLossPrice(string price)
         {
             _targetHighlightStopLossPrice = price;
-
-            foreach (ComboBoxItem item in cboKlineInterval.Items)
-            {
-                if (item.Content?.ToString() == interval.ToString())
-                {
-                    if (cboKlineInterval.SelectedItem == item)
-                    {
-                        // 若分K未改變，不會觸發非同步分析重繪，直接呼叫反白
-                        ApplyTargetHighlight();
-                    }
-                    else
-                    {
-                        // 改變分K會觸發 CboKlineInterval_SelectionChanged -> 非同步分析 -> 最終在 UpdateObserverViews 中反白
-                        cboKlineInterval.SelectedItem = item;
-                    }
-                    break;
-                }
-            }
+            ApplyTargetHighlight();
         }
 
         private void ApplyTargetHighlight()
@@ -4743,50 +4726,19 @@ namespace ExtremeSignalAppCS
         {
             int totalShort = 0;
             int totalLong = 0;
-            var statsList = new List<IntervalStat>();
 
-            foreach (var kvp in resultsMap)
+            var uniqueResults = resultsMap.Values.FirstOrDefault() ?? new List<SimulationResult>();
+
+            foreach (var r in uniqueResults)
             {
-                int interval = kvp.Key;
-                var results = kvp.Value;
-                int shortCount = 0;
-                int longCount = 0;
-
-                foreach (var r in results)
-                {
-                    if (r.Tags.Contains("history") || r.Tags.Contains("annotation")) continue;
-                    if (r.Type == "做多") longCount++;
-                    if (r.Type == "做空") shortCount++;
-                }
-
-                totalShort += shortCount;
-                totalLong += longCount;
-
-                string color = "#DCDCDC";
-                if (shortCount > longCount) color = "#28A745"; // 綠色
-                else if (longCount > shortCount) color = "#EB4B4B"; // 紅色
-
-                string op = "等於";
-                if (shortCount > longCount) op = ">";
-                else if (shortCount < longCount) op = "<";
-
-                statsList.Add(new IntervalStat
-                {
-                    IntervalName = $"{interval} 分K",
-                    ShortCount = shortCount,
-                    LongCount = longCount,
-                    DisplayText = $"{interval,2} 分K: 做空 共 {shortCount,2} 筆 {op} 做多 共 {longCount,2} 筆",
-                    DisplayColor = color
-                });
+                if (r.Tags.Contains("history") || r.Tags.Contains("annotation")) continue;
+                if (r.Type == "做多") totalLong++;
+                if (r.Type == "做空") totalShort++;
             }
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 _intervalStatsCollection.Clear();
-                foreach (var s in statsList)
-                {
-                    _intervalStatsCollection.Add(s);
-                }
 
                 if (lblTotalStats != null)
                 {

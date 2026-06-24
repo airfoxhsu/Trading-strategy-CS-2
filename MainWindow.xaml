@@ -158,7 +158,7 @@
                         </ComboBox>
 
                         <Label Content="小臺K線(分):" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                        <ComboBox x:Name="cboKlineInterval" Width="45" SelectedIndex="7" SelectionChanged="CboKlineInterval_SelectionChanged">
+                        <ComboBox x:Name="cboKlineInterval" Width="45" SelectedIndex="0" SelectionChanged="CboKlineInterval_SelectionChanged">
                             <ComboBoxItem Content="1"/>
                             <ComboBoxItem Content="2"/>
                             <ComboBoxItem Content="3"/>
