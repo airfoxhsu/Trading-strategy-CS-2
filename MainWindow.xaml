@@ -207,8 +207,30 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <Border Grid.Row="0" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="0,0,0,1" Padding="4">
-                            <TextBlock x:Name="lblTotalStats" Text="總計: 做空 共 0 筆 等於 做多 共 0 筆" Foreground="#DCDCDC" FontWeight="Bold" Background="Transparent"/>
+                        <!-- 今日已平倉損益面板 -->
+                        <Border Grid.Row="0" Background="#222222" Padding="6,4" Margin="4,2,4,4" CornerRadius="3" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Orientation="Vertical">
+                                    <TextBlock x:Name="lblPnLAccount" Text="帳號: 未登入" Foreground="Gray" FontSize="11"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                        <TextBlock Text="今日已平倉損益: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblTodayPnL" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                        <TextBlock Text="可動用保證金: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblMargin" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                        <TextBlock Text="當前庫存: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblCurrentPosition" Text="無部位" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <Button Grid.Column="1" x:Name="btnQueryPnL" Content="查詢" Width="50" Height="26" VerticalAlignment="Center" Click="BtnQueryPnL_Click" Background="#333" Foreground="White"/>
+                            </Grid>
                         </Border>
                         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <ItemsControl x:Name="icIntervalStats" Padding="4">

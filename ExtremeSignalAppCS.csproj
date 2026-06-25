@@ -7,15 +7,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <PlatformTarget>x86</PlatformTarget>
     <Platforms>x86</Platforms>
     <LangVersion>latest</LangVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <!-- 排除測試腳本與子目錄 -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);YuantaQuoteBridge\**;scratch\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);YuantaQuoteBridge\**;scratch\**;ExtremeSignalAppCS.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="交易API C# 範例\**" />
     <None Update="config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -30,6 +32,12 @@
     </Reference>
     <Reference Include="Interop.YuantaQuoteLib">
       <HintPath>lib\Interop.YuantaQuoteLib.dll</HintPath>
+    </Reference>
+    <Reference Include="AxInterop.YuantaOrdLib">
+      <HintPath>lib\AxInterop.YuantaOrdLib.dll</HintPath>
+    </Reference>
+    <Reference Include="Interop.YuantaOrdLib">
+      <HintPath>lib\Interop.YuantaOrdLib.dll</HintPath>
     </Reference>
   </ItemGroup>
 

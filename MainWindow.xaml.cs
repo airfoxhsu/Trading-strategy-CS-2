@@ -46,6 +46,21 @@ namespace ExtremeSignalAppCS
         private YuantaQuoteWrapper? _yuantaQuote;
         private string[] _symbolsToRegister = [];
 
+        // 原生元大 COM 下單/帳務連線相關欄位
+        private YuantaOrdLib.YuantaOrdClass? _yuantaOrd;
+        private string _currentBranch = string.Empty;
+        private string _currentAccount = string.Empty;
+        private readonly Services.PnLCalculator _pnlCalculator = new();
+        private string _mktUser = string.Empty;
+        private string _mktPwd = string.Empty;
+        private bool _isOrdLoggedIn = false;
+        private bool _isOrdLoggingIn = false;
+
+        // 新增：即時部位與狀態
+        private volatile int _currentPositionLots = 0;
+        private double _currentPositionCost = 0;
+        private string _lastTestedFAWorkID = "FA004"; // 測試用，後續可改為正確代碼
+
         // 雙軌行情資料快取 (大臺/小臺, 日盤/夜盤)
         private readonly Dictionary<string, Dictionary<string, ConcurrentAppendOnlyList<TradeTick>>> _liveSymbolTrades;
         private readonly Dictionary<string, Dictionary<string, ConcurrentAppendOnlyList<TradeTick>>> _replaySymbolTrades;
@@ -368,6 +383,24 @@ namespace ExtremeSignalAppCS
                     _lastRenderedTxfPrice = txfPrice;
                     _lastRenderedTxfTime = txfTime;
                 }
+
+                // --- 新增：即時計算未實現損益並更新圖表 ---
+                if (klineChart != null)
+                {
+                    // 若有持倉，根據當前最新的小台/大台價來計算損益
+                    int currentPrice = mxfPrice > 0 ? mxfPrice : (txfPrice > 0 ? txfPrice : 0);
+                    if (_currentPositionLots != 0 && _currentPositionCost > 0 && currentPrice > 0)
+                    {
+                        // 假設主要以小台 (MXF) 為主，乘數為 50
+                        int multiplier = 50; 
+                        double pnl = (currentPrice - _currentPositionCost) * _currentPositionLots * multiplier;
+                        klineChart.UpdatePositionInfo(_currentPositionLots, _currentPositionCost, pnl);
+                    }
+                    else
+                    {
+                        klineChart.UpdatePositionInfo(0, 0, 0);
+                    }
+                }
             }
         }
 
@@ -407,8 +440,8 @@ namespace ExtremeSignalAppCS
 
             // 8. 補充：未破分 K 監控的標題條
             wndUnbrokenK.lblTitle.FontSize = newFontSize;
-            wndUnbrokenK.lblSummaryShort.FontSize = newFontSize;
-            wndUnbrokenK.lblSummaryLong.FontSize = newFontSize;
+            wndUnbrokenK.lblTotalStats.FontSize = newFontSize;
+            wndUnbrokenK.lblUnbrokenStats.FontSize = newFontSize;
 
             // 9. 補充：最底部觀察參數列
             foreach (System.Windows.UIElement child in spBottomBar.Children)
@@ -434,7 +467,7 @@ namespace ExtremeSignalAppCS
             }
 
             // 10. 右下方 1/3 統計區塊字體縮放
-            if (lblTotalStats != null) lblTotalStats.FontSize = newFontSize;
+
             if (icIntervalStats != null) icIntervalStats.FontSize = newFontSize;
         }
 
@@ -650,6 +683,8 @@ namespace ExtremeSignalAppCS
                         var root = doc.RootElement;
                         if (root.TryGetProperty("username", out var u)) user = u.GetString() ?? "";
                         if (root.TryGetProperty("password", out var p)) pwd = p.GetString() ?? "";
+                        _mktUser = user;
+                        _mktPwd = pwd;
                     }
                     catch (Exception ex)
                     {
@@ -710,6 +745,35 @@ namespace ExtremeSignalAppCS
             btnRealtime.Background = (System.Windows.Media.Brush)Application.Current.Resources["SciFiActiveBg"];
             lblRealtimeStatus.Content = "未連線";
             lblRealtimeStatus.Foreground = System.Windows.Media.Brushes.Red;
+
+            // 登出下單/帳務 API 並註銷事件
+            try
+            {
+                if (_yuantaOrd != null)
+                {
+                    _yuantaOrd.DoLogout();
+                    _yuantaOrd.OnLogonS -= OnOrdLogonS;
+                    _yuantaOrd.OnUserDefinsFuncResult -= OnOrdUserDefinsFuncResult;
+                    _yuantaOrd.OnOrdMatF -= OnOrdMatF;
+                    _yuantaOrd.OnRfOrdMatRF -= OnRfOrdMatRF;
+                    AppendLog("【帳務】DoLogout 呼叫完成，註銷事件。");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"【系統】釋放下單 API 時發生異常: {ex.Message}");
+            }
+            finally
+            {
+                _yuantaOrd = null;
+                _currentBranch = string.Empty;
+                _currentAccount = string.Empty;
+                _isOrdLoggedIn = false;
+                _isOrdLoggingIn = false;
+                lblPnLAccount.Text = "帳號: 未登入";
+                lblTodayPnL.Text = "NT$ 0";
+                lblTodayPnL.Foreground = System.Windows.Media.Brushes.LightGray;
+            }
 
             // 安全斬斷事件連接，徹底防範幽靈 Tick 發生
             try
@@ -799,6 +863,33 @@ namespace ExtremeSignalAppCS
                     // 標註目前連線線路 (日盤443，夜盤442，或其它自選)
                     lblRealtimeStatus.Content = $"已連線 ({_currentRealtimePort})";
                     lblRealtimeStatus.Foreground = System.Windows.Media.Brushes.LightGreen;
+
+                    // 延遲連線下單 API，避免行情與下單連續登入導致元大 API 報錯 -101
+                    if (_isOrdLoggedIn || _isOrdLoggingIn)
+                    {
+                        AppendLog($"【行情】已連線。帳務 API 已在登入狀態或正在登入，跳過重複呼叫。已登入: {_isOrdLoggedIn}, 登入中: {_isOrdLoggingIn}");
+                    }
+                    else
+                    {
+                        AppendLog("【行情】已連線。3 秒後自動啟動下單/帳務 API 連線登入...");
+                        DispatcherTimerExtensions.RunOnce(() =>
+                        {
+                            try
+                            {
+                                if (_isOrdLoggedIn || _isOrdLoggingIn) return;
+                                if (!string.IsNullOrEmpty(_mktUser) && !string.IsNullOrEmpty(_mktPwd))
+                                {
+                                    InitYuantaOrd();
+                                    int ordRes = LoginYuantaOrd(_mktUser, _mktPwd);
+                                    AppendLog($"【帳務】SetFutOrdConnection 呼叫完成，回傳結果代碼: {ordRes} (2 代表已連線成功，其他代表送出中或失敗)");
+                                }
+                            }
+                            catch (Exception ordEx)
+                            {
+                                AppendLog($"【帳務錯誤】自動登入帳務 API 失敗: {ordEx.Message}");
+                            }
+                        }, TimeSpan.FromMilliseconds(3000));
+                    }
                     
                     // 1. 設定預載標記，在此期間 Tick 將靜默寫入快取，不觸發背景量化計算
                     lock (_rtLock)
@@ -4211,11 +4302,7 @@ namespace ExtremeSignalAppCS
                     lblMxfNetSpeed.Text = "| 小臺速差: --";
                     lblLivePrice.Text = "| 成交價: --";
 
-                    if (lblTotalStats != null)
-                    {
-                        lblTotalStats.Text = "總計: 做空 共 0 筆 等於 做多 共 0 筆";
-                        lblTotalStats.Foreground = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#DCDCDC"));
-                    }
+
 
                     // 清空底部觀察狀態設定值
                     txtObsHigh.Text = "";
@@ -4707,6 +4794,8 @@ namespace ExtremeSignalAppCS
             public string Session { get; } = session;
             public void Deconstruct(out int port, out string session) { port = Port; session = Session; }
         }
+
+
         // ==================== 11. 共用區間統計計算邏輯 ====================
         private Dictionary<int, List<SimulationResult>> ComputeAllIntervalResults(string sessionName, IReadOnlyList<TradeTick> trades, List<SimulationResult> txfSigs, List<SimulationResult> mxfSigs, int obsN, int maxCount = -1)
         {
@@ -4740,25 +4829,410 @@ namespace ExtremeSignalAppCS
             {
                 _intervalStatsCollection.Clear();
 
-                if (lblTotalStats != null)
+                // lblTotalStats 已經移至 UnbrokenKMonitor
+            }));
+        }
+
+        // ==================== 10. 元大下單/帳務 API 整合與今日損益查詢 ====================
+
+        private void InitYuantaOrd()
+        {
+            if (_yuantaOrd != null) return;
+
+            _yuantaOrd = new YuantaOrdLib.YuantaOrdClass();
+            _yuantaOrd.OnLogonS += OnOrdLogonS;
+            _yuantaOrd.OnUserDefinsFuncResult += OnOrdUserDefinsFuncResult;
+            _yuantaOrd.OnOrdMatF += OnOrdMatF;
+            _yuantaOrd.OnRfOrdMatRF += OnRfOrdMatRF;
+            _pnlCalculator.Reset();
+        }
+
+        private int LoginYuantaOrd(string user, string pwd)
+        {
+            if (_yuantaOrd == null) return -1;
+            if (_isOrdLoggedIn || _isOrdLoggingIn)
+            {
+                AppendLog($"【帳務】已在登入狀態或正在登入，跳過連線呼叫。已登入: {_isOrdLoggedIn}, 登入中: {_isOrdLoggingIn}");
+                return 2; 
+            }
+
+            _isOrdLoggingIn = true;
+            int ret = _yuantaOrd.SetFutOrdConnection(user, pwd, "api.yuantafutures.com.tw", 80);
+            if (ret != 2 && ret != 3) // 2 代表成功，3 代表連線中/送出中
+            {
+                _isOrdLoggingIn = false;
+            }
+            return ret;
+        }
+
+        private void OnOrdLogonS(int TLinkStatus, string AccList, string Casq, string Cast)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                AppendLog($"【帳務狀態】OnLogonS: {TLinkStatus}, 帳號清單: {AccList.Trim()}");
+
+                if (TLinkStatus == 2) // 登入連線成功
                 {
-                    lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 等於 做多 共 {totalLong} 筆";
-                    if (totalShort > totalLong)
+                    _isOrdLoggedIn = true;
+                    _isOrdLoggingIn = false;
+
+                    string accListStr = AccList.Trim();
+                    if (!string.IsNullOrEmpty(accListStr))
                     {
-                        lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 > 做多 共 {totalLong} 筆";
-                        lblTotalStats.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#28A745"));
-                    }
-                    else if (totalLong > totalShort)
-                    {
-                        lblTotalStats.Text = $"總計: 做空 共 {totalShort} 筆 < 做多 共 {totalLong} 筆";
-                        lblTotalStats.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EB4B4B"));
-                    }
-                    else
-                    {
-                        lblTotalStats.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#DCDCDC"));
+                        string[] accounts = accListStr.Split(';');
+                        foreach (var acc in accounts)
+                        {
+                            // 過濾非期貨帳號 (通常期貨帳號開頭為 '2')
+                            if (acc.Length > 2 && acc[0] == '2')
+                            {
+                                string accountInfo = acc.Substring(2); // 例如 "F009808900" 或 "F00-9808900"
+
+                                // 元大下單格式通常是: 分公司-帳號 或 3位分公司+7位帳號
+                                if (accountInfo.Contains("-"))
+                                {
+                                    string[] parts = accountInfo.Split('-');
+                                    if (parts.Length >= 3)
+                                    {
+                                        _currentBranch = parts[0];
+                                        _currentAccount = parts[1] + parts[2];
+                                    }
+                                    else if (parts.Length == 2)
+                                    {
+                                        _currentBranch = parts[0];
+                                        _currentAccount = parts[1];
+                                    }
+                                }
+                                else if (accountInfo.Length >= 10) // 例如 "F009808900" (前3碼分公司，後7碼帳號)
+                                {
+                                    _currentBranch = accountInfo.Substring(0, 3);
+                                    _currentAccount = accountInfo.Substring(3);
+                                }
+                                else
+                                {
+                                    _currentBranch = "F00";
+                                    _currentAccount = accountInfo;
+                                }
+
+                                lblPnLAccount.Text = $"帳號: {_currentBranch}-{_currentAccount}";
+                                AppendLog($"【帳務】成功取得期貨監控帳號: {_currentBranch}-{_currentAccount}，自動發送今日平倉損益查詢 (FA003)...");
+
+                                // 自動觸發第一次查詢今日平倉損益與庫存
+                                QueryTodayPnL();
+                                QueryCurrentPositions();
+                                break;
+                            }
+                        }
                     }
                 }
+                else if (TLinkStatus < 0) // 登入失敗 (例如 -101)
+                {
+                    _isOrdLoggedIn = false;
+                    _isOrdLoggingIn = false;
+                    lblPnLAccount.Text = $"帳號: 登入失敗 ({TLinkStatus})";
+                    lblTodayPnL.Text = "NT$ 0";
+                    lblTodayPnL.Foreground = Brushes.LightGray;
+                }
             }));
+        }
+
+        private void QueryTodayPnL()
+        {
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+            {
+                AppendLog("【帳務】查詢失敗: 帳務 API 未登入或未取得有效帳號。");
+                return;
+            }
+
+            // 呼叫 UserDefinsFunc，代碼 FA003
+            string param = $"Func=FA003|bhno={_currentBranch}|acno={_currentAccount}|suba=|type=1|currency=TWD";
+            int ret = _yuantaOrd.UserDefinsFunc(param, "FA003");
+            AppendLog($"【帳務】UserDefinsFunc(FA003) 送出，回傳代碼: {ret} (0 代表送出成功)");
+        }
+
+        private void QueryCurrentPositions()
+        {
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount)) return;
+
+            // 送出 FA002 (國內庫存總計)
+            string param = $"Func=FA002|bhno={_currentBranch}|acno={_currentAccount}|suba=|kind=F|FC=N";
+            _yuantaOrd.UserDefinsFunc(param, "FA002");
+            AppendLog("【帳務】已送出國內庫存查詢 (FA002)...");
+        }
+
+
+        private void OnOrdUserDefinsFuncResult(int RowCount, string Results, string WorkID)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                AppendLog($"【帳務】自訂功能回報: WorkID={WorkID}, Rows={RowCount}, 內容={Results}");
+
+                if (WorkID == "FA003" && RowCount > 0 && !string.IsNullOrEmpty(Results))
+                {
+                    try
+                    {
+                        string[] fields = Results.Split('|');
+                        int colCount = fields.Length / RowCount;
+
+                        AppendLog($"【帳務】開始解析 FA003 表格 ({RowCount} 行 * {colCount} 欄)...");
+
+                        double totalCalculatedPnL = 0;
+                        bool foundPnLField = false;
+                        int pnlFieldIndex = -1;
+
+                        if (RowCount == 1)
+                        {
+                            AppendLog($"【帳務】開始解析 FA003 單行鍵值對...");
+                            foreach (string field in fields)
+                            {
+                                if (field.Trim().StartsWith("T_TOTAL_VALUE=", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string valStr = field.Substring(field.IndexOf('=') + 1);
+                                    if (double.TryParse(valStr, out double val))
+                                    {
+                                        totalCalculatedPnL = val;
+                                        foundPnLField = true;
+                                        AppendLog($"【帳務】匹配到 T_TOTAL_VALUE (平倉損益): {val}");
+                                    }
+                                }
+                                else if (field.Trim().StartsWith("CANUSE_MARGIN=", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string valStr = field.Substring(field.IndexOf('=') + 1);
+                                    if (double.TryParse(valStr, out double val))
+                                    {
+                                        UpdateMarginUI(val);
+                                    }
+                                }
+                            }
+                        }
+                        // 1. 如果第一行看起來是文字標題，我們掃描標題來尋找損益欄位索引
+                        else if (RowCount > 1 && colCount > 0)
+                        {
+                            for (int j = 0; j < colCount; j++)
+                            {
+                                string colName = fields[j].Trim();
+                                if (colName.Contains("損益") || colName.Contains("平倉損益") || colName.Contains("沖銷損益") ||
+                                    colName.Equals("PNL", StringComparison.OrdinalIgnoreCase) || colName.Equals("PROFIT", StringComparison.OrdinalIgnoreCase) ||
+                                    colName.Equals("GRANTAL", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    pnlFieldIndex = j;
+                                    foundPnLField = true;
+                                    AppendLog($"【帳務】匹配到平倉損益欄位索引: [{j}] ({colName})");
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 2. 印出前幾列的內容供除錯
+                        for (int i = 0; i < Math.Min(RowCount, 10); i++)
+                        {
+                            var rowFields = new List<string>();
+                            for (int j = 0; j < colCount; j++)
+                            {
+                                int idx = i * colCount + j;
+                                if (idx < fields.Length)
+                                    rowFields.Add($"[{j}]:{fields[idx].Trim()}");
+                            }
+                            AppendLog($"【帳務資料】行 {i}: {string.Join(", ", rowFields)}");
+                        }
+
+                        // 3. 計算總損益：
+                        if (foundPnLField && pnlFieldIndex != -1)
+                        {
+                            for (int i = 1; i < RowCount; i++)
+                            {
+                                int idx = i * colCount + pnlFieldIndex;
+                                if (idx < fields.Length && double.TryParse(fields[idx], out double val))
+                                {
+                                    totalCalculatedPnL += val;
+                                }
+                            }
+                        }
+
+                        if (foundPnLField)
+                        {
+                            UpdatePnLUI(totalCalculatedPnL);
+                            AppendLog($"【帳務】今日已平倉總損益解析完成，合計為: NT$ {totalCalculatedPnL}");
+                        }
+                        else
+                        {
+                            AppendLog("【帳務】未偵測到明確標題，將僅印出明細。以 FIFO 即時累加值顯示於 UI。");
+                            UpdatePnLUI(_pnlCalculator.TotalPnL);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"【帳務解析錯誤】解析 FA003 查詢結果時出錯: {ex.Message}");
+                    }
+                }
+                else if (WorkID == "FA002" && !string.IsNullOrEmpty(Results))
+                {
+                    try
+                    {
+                        if (RowCount == 0 || Results.Contains("TOTAL_OFF_POSITION=0") || Results.Contains("查無資料"))
+                        {
+                            _currentPositionLots = 0;
+                            _currentPositionCost = 0;
+                            lblCurrentPosition.Text = "無部位";
+                            AppendLog($"【庫存更新】目前無部位 (0 口)");
+                        }
+                        else
+                        {
+                            string[] fields = Results.Split('|');
+                            int colCount = fields.Length / RowCount;
+
+                            int cmdIdx = -1, posIdx = -1, priceIdx = -1;
+                            
+                            // 1. 找尋標題列索引
+                            for (int j = 0; j < colCount; j++)
+                            {
+                                string colName = fields[j].Trim().ToUpper();
+                                if (colName == "COMMODITY" || colName == "COMMODITY_ID") cmdIdx = j;
+                                if (colName == "OFF_POSITION" || colName == "QTY" || colName.Contains("POSITION")) posIdx = j;
+                                if (colName == "PRICE" || colName == "AVG_PRICE" || colName.Contains("COST")) priceIdx = j;
+                            }
+
+                            // 2. 解析後續資料列
+                            if (cmdIdx != -1 && posIdx != -1 && priceIdx != -1)
+                            {
+                                int foundLots = 0;
+                                double foundCost = 0;
+                                
+                                for (int i = 1; i < RowCount; i++)
+                                {
+                                    int rowBase = i * colCount;
+                                    if (rowBase + cmdIdx < fields.Length)
+                                    {
+                                        string cmd = fields[rowBase + cmdIdx].Trim();
+                                        
+                                        // 簡單判斷：只要是大台 TXF 或小台 MXF 就納入部位計算 (可根據當前商品切換)
+                                        if (cmd.StartsWith("TXF") || cmd.StartsWith("MXF"))
+                                        {
+                                            if (int.TryParse(fields[rowBase + posIdx], out int pos) && double.TryParse(fields[rowBase + priceIdx], out double price))
+                                            {
+                                                foundLots += pos;
+                                                // 若有多筆部位，此處簡單用最後一筆覆蓋（實務上元大 FA002 會彙總）
+                                                if (pos != 0) foundCost = price;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                _currentPositionLots = foundLots;
+                                _currentPositionCost = foundCost;
+                                lblCurrentPosition.Text = $"{foundLots} 口 (成本: {foundCost})";
+                                AppendLog($"【庫存更新】取得最新部位: {foundLots} 口, 均價: {foundCost}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"【帳務解析錯誤】解析 FA002 庫存結果時出錯: {ex.Message}");
+                    }
+                }
+                
+                // 為了除錯，如果是測試送出的 FA001 或 FA002 也把內容印出來
+                if ((WorkID == "FA001" || WorkID == "FA002") && WorkID != "FA003")
+                {
+                    try
+                    {
+                        string[] fields = Results.Split('|');
+                        int colCount = RowCount > 0 ? fields.Length / RowCount : 0;
+                        for (int i = 0; i < Math.Min(RowCount, 5); i++)
+                        {
+                            var rowFields = new List<string>();
+                            for (int j = 0; j < colCount; j++)
+                            {
+                                int idx = i * colCount + j;
+                                if (idx < fields.Length)
+                                    rowFields.Add($"[{j}]:{fields[idx].Trim()}");
+                            }
+                            AppendLog($"【{WorkID} 測試資料】行 {i}: {string.Join(", ", rowFields)}");
+                        }
+                    }
+                    catch { }
+                }
+            }));
+        }
+
+        private void OnOrdMatF(string Omkt, string Buys, string Cmbf, string Bhno, string AcNo, string Suba, string Symb, string Scnam, string O_Kind, string S_Buys, string O_Prc, string A_Prc, string O_Qty, string Deal_Qty, string T_Date, string D_Time, string Order_No, string O_Src, string O_Lin, string Oseq_No)
+        {
+            if (AcNo.Trim() != _currentAccount) return;
+
+            if (double.TryParse(A_Prc, out double price) && int.TryParse(Deal_Qty, out int qty))
+            {
+                _pnlCalculator.AddExecution(Symb, Buys, price, qty);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    UpdatePnLUI(_pnlCalculator.TotalPnL);
+                    AppendLog($"【成交回報】大/小臺平倉損益更新。商品: {Symb.Trim()}, 買賣: {Buys.Trim()}, 價格: {price}, 口數: {qty}。累計今日平倉損益: NT$ {_pnlCalculator.TotalPnL}");
+                }));
+
+                // 成交後立刻自動查最新庫存部位，取代原先的計時器
+                QueryCurrentPositions();
+            }
+        }
+
+        private void OnRfOrdMatRF(string exc, string Omkt, string Bhno, string Acno, string Suba, string Symb, string Scnam, string O_Kind, string Buys, string S_Buys, string PriceType, string O_Prc1, string O_Prc2, string A_Prc, string O_Qty, string Deal_Qty, string O_Date, string O_Time, string Order_No, string O_Src, string O_Lin, string Oseq_No)
+        {
+            if (Acno.Trim() != _currentAccount) return;
+
+            if (double.TryParse(A_Prc, out double price) && int.TryParse(Deal_Qty, out int qty))
+            {
+                _pnlCalculator.AddExecution(Symb, Buys, price, qty);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    UpdatePnLUI(_pnlCalculator.TotalPnL);
+                    AppendLog($"【外期成交回報】平倉損益更新。商品: {Symb.Trim()}, 買賣: {Buys.Trim()}, 價格: {price}, 口數: {qty}。累計今日平倉損益: NT$ {_pnlCalculator.TotalPnL}");
+                }));
+            }
+        }
+
+        private void UpdatePnLUI(double pnl)
+        {
+            lblTodayPnL.Text = $"NT$ {pnl:N0}";
+            if (pnl > 0)
+            {
+                lblTodayPnL.Foreground = new SolidColorBrush(Color.FromRgb(235, 75, 75)); // 獲利為紅
+            }
+            else if (pnl < 0)
+            {
+                lblTodayPnL.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));  // 虧損為綠
+            }
+            else
+            {
+                lblTodayPnL.Foreground = Brushes.LightGray;
+            }
+        }
+
+        private void UpdateMarginUI(double margin)
+        {
+            lblMargin.Text = $"NT$ {margin:N0}";
+        }
+
+        private void BtnQueryPnL_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_isOrdLoggedIn)
+            {
+                AppendLog("【帳務】未成功登入帳務 API，嘗試手動觸發連線登入...");
+                if (!string.IsNullOrEmpty(_mktUser) && !string.IsNullOrEmpty(_mktPwd))
+                {
+                    InitYuantaOrd();
+                    // 強制重置登入中旗標，允許手動按鈕時強迫重試連線
+                    _isOrdLoggingIn = false;
+                    int ordRes = LoginYuantaOrd(_mktUser, _mktPwd);
+                    AppendLog($"【帳務】手動 SetFutOrdConnection 呼叫完成，回傳結果代碼: {ordRes}");
+                }
+                else
+                {
+                    AppendLog("【帳務】登入失敗: 查無行情登入帳密。請先連接即時行情。");
+                }
+                return;
+            }
+            AppendLog("【帳務】手動觸發帳務與庫存查詢...");
+            QueryTodayPnL();
+            QueryCurrentPositions();
         }
     }
 

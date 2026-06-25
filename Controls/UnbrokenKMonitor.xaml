@@ -27,8 +27,8 @@
         <!-- 統計顯示條 -->
         <Border Grid.Row="1" Background="{StaticResource PanelDarkBg}" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="0,0,0,1" Padding="6,4">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                <TextBlock x:Name="lblSummaryShort" Foreground="#28A745" FontWeight="Bold" FontSize="13" Text="做空共有 0 項" Margin="0,0,15,0"/>
-                <TextBlock x:Name="lblSummaryLong" Foreground="#EB4B4B" FontWeight="Bold" FontSize="13" Text="做多共有 0 項"/>
+                <TextBlock x:Name="lblTotalStats" FontWeight="Bold" FontSize="13" Margin="0,0,15,0"/>
+                <TextBlock x:Name="lblUnbrokenStats" FontWeight="Bold" FontSize="13"/>
             </StackPanel>
         </Border>
 

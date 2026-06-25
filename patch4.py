@@ -1,353 +1,221 @@
-﻿import re
+﻿import sys
+import re
 
-with open('MainWindow.xaml.cs', 'r', encoding='utf-8') as f:
+file_path = r'h:\Coding\CSharp\Trading-strategy-CS-2\MainWindow.xaml.cs'
+
+with open(file_path, 'r', encoding='utf-8') as f:
     content = f.read()
 
-# 1. Add _latestAnalysisResult
-content = content.replace(
-    'private volatile int _uiGeneration = 0; // UI 世代計數器，防止過期 Dispatcher 任務覆蓋已清空的 UI',
-    'private volatile int _uiGeneration = 0; // UI 世代計數器，防止過期 Dispatcher 任務覆蓋已清空的 UI\n        private volatile System.Collections.Generic.Dictionary<string, object>? _latestAnalysisResult = null;'
-)
+fields = '''
+        // 原生元大 COM 行情連線相關欄位
+        private AxYuantaQuoteLib.AxYuantaQuote? _axHost;
+        private YuantaQuoteWrapper? _yuantaQuote;
+        private string[] _symbolsToRegister = [];
 
-# 2. Add volatile variables for lock-free match qty instead of dictionary
-content = content.replace(
-    'private readonly Dictionary<string, int> _rtLastMatchQty = [];',
-    '// 無鎖即時行情過濾與防呆狀態 (Lock-Free Fallbacks)\n        private volatile int _txfLastMatchQty = -1;\n        private volatile int _mxfLastMatchQty = -1;'
-)
-content = content.replace('_rtLastMatchQty.Clear();', '_txfLastMatchQty = -1;\n                _mxfLastMatchQty = -1;')
+        // 委託與帳務 COM (YuantaOrdLib)
+        private YuantaOrdLib.YuantaOrdClass? _yuantaOrd;
+        private string _currentBranch = string.Empty;
+        private string _currentAccount = string.Empty;
+        public System.Collections.ObjectModel.ObservableCollection<PendingOrder> PendingOrders { get; } = new();
+'''
+content = re.sub(r'// 原生元大 COM 行情連線相關欄位.*?private string\[\] _symbolsToRegister = \[\];', fields, content, flags=re.DOTALL)
 
-# 4. OnGetMktAll modifications
-on_get_mkt_all_old = '''                // 重複/滯後 Tick 行情過濾防線
-                lock (_rtLock)
-                {
-                    if (_rtLastMatchQty.TryGetValue(baseSymbol, out int prevQty))
-                    {
-                        if (currentQty <= prevQty) return;
-                    }
-                    _rtLastMatchQty[baseSymbol] = currentQty;
-                }
+newMethods = '''
+        // ==================== 10. YuantaOrd API ====================
 
-                int price = (int)double.Parse(matchPri);
-                
-                // 取得買一賣一最前端值以判定內外盤
-                string bpStr = bestBuyPri.Split(',')[0];
-                string spStr = bestSellPri.Split(',')[0];
-                int bestBp = (!string.IsNullOrEmpty(bpStr) && double.TryParse(bpStr, out double bpVal)) ? (int)bpVal : 0;
-                int bestSp = (!string.IsNullOrEmpty(spStr) && double.TryParse(spStr, out double spVal)) ? (int)spVal : 0;'''
-
-on_get_mkt_all_new = '''                // 重複/滯後 Tick 行情過濾防線 (Lock-Free)
-                if (baseSymbol == "TXF")
-                {
-                    if (currentQty <= _txfLastMatchQty) return;
-                    _txfLastMatchQty = currentQty;
-                }
-                else
-                {
-                    if (currentQty <= _mxfLastMatchQty) return;
-                    _mxfLastMatchQty = currentQty;
-                }
-
-                int price = (int)double.Parse(matchPri.AsSpan());
-                
-                // Zero Allocation 解析買一賣一 (取代 Split(',') 避免產生陣列與字串垃圾)
-                int bestBp = ParseFirstPrice(bestBuyPri);
-                int bestSp = ParseFirstPrice(bestSellPri);'''
-
-content = content.replace(on_get_mkt_all_old, on_get_mkt_all_new)
-
-# 5. OnGetMktAll lock(_rtLock) replacement
-lock_rt_old = '''                // 買賣盤方向Fallback處理
-                lock (_rtLock)
-                {
-                    if (side == TradeSide.Unknown)
-                    {
-                        var prevTrades = _liveSymbolTrades[baseSymbol][session];
-                        side = prevTrades.Count > 0 ? prevTrades[^1].Side : TradeSide.Outer;
-                    }
-
-                    var tick = new TradeTick(baseSymbol, mt, tVal, price, side, bestBp, bestSp, session);
-                    _liveSymbolTrades[baseSymbol][session].Add(tick);
-
-                    // O(1) 增量狀態更新
-                    var state = _rtState[baseSymbol][session];
-                    state.Count++;
-                    state.SumPrice += price;
-                    
-                    if (price > state.DayMax)
-                    {
-                        state.DayMax = price;
-                        state.MaxTime = mt;
-                    }
-                    if (price < state.DayMin)
-                    {
-                        state.DayMin = price;
-                        state.MinTime = mt;
-                    }
-
-                    if (side == TradeSide.Outer)
-                    {
-                        state.OuterCount++;
-                        state.FirstOuterTime ??= tVal;
-                        state.LastOuterTime = tVal;
-                    }
-                    else if (side == TradeSide.Inner)
-                    {
-                        state.InnerCount++;
-                        state.FirstInnerTime ??= tVal;
-                        state.LastInnerTime = tVal;
-                    }
-
-                    if (baseSymbol == "MXF")
-                    {
-                        _lastMxfPrice = price;
-                        _lastMxfTime = mt;
-                    }
-                }'''
-
-lock_rt_new = '''                // 買賣盤方向Fallback處理 (Lock-Free)
-                if (side == TradeSide.Unknown)
-                {
-                    var prevTrades = _liveSymbolTrades[baseSymbol][session];
-                    side = prevTrades.Count > 0 ? prevTrades[^1].Side : TradeSide.Outer;
-                }
-
-                var tick = new TradeTick(baseSymbol, mt, tVal, price, side, bestBp, bestSp, session);
-                
-                // 完全 Lock-Free 的資料結構寫入 (Zero GC Allocation & No OS Lock)
-                _liveSymbolTrades[baseSymbol][session].Add(tick);
-
-                // O(1) 增量狀態更新，改用極輕量物件鎖，避免與其他商品或全域資源阻塞
-                var state = _rtState[baseSymbol][session];
-                lock (state)
-                {
-                    state.Count++;
-                    state.SumPrice += price;
-                    
-                    if (price > state.DayMax)
-                    {
-                        state.DayMax = price;
-                        state.MaxTime = mt;
-                    }
-                    if (price < state.DayMin)
-                    {
-                        state.DayMin = price;
-                        state.MinTime = mt;
-                    }
-
-                    if (side == TradeSide.Outer)
-                    {
-                        state.OuterCount++;
-                        state.FirstOuterTime ??= tVal;
-                        state.LastOuterTime = tVal;
-                    }
-                    else if (side == TradeSide.Inner)
-                    {
-                        state.InnerCount++;
-                        state.FirstInnerTime ??= tVal;
-                        state.LastInnerTime = tVal;
-                    }
-
-                    if (baseSymbol == "MXF")
-                    {
-                        _lastMxfPrice = price;
-                        _lastMxfTime = mt;
-                    }
-                }'''
-
-content = content.replace(lock_rt_old, lock_rt_new)
-
-# 6. Replace string Contains with StartsWith
-content = content.replace('symbol.Contains("TXF") ? "TXF" : (symbol.Contains("MXF") ? "MXF" : "")', 'symbol.StartsWith("TXF") ? "TXF" : (symbol.StartsWith("MXF") ? "MXF" : "")')
-
-# 7. Add ParseFirstPrice method
-parse_first_price = '''        // Zero Allocation 字串數字提取 (避免 Split(',') 造成的字串與陣列配置)
-        private int ParseFirstPrice(string s)
+        private void BtnQueryPnL_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(s)) return 0;
-            int commaIdx = s.IndexOf(',');
-            var span = commaIdx < 0 ? s.AsSpan() : s.AsSpan(0, commaIdx);
-            if (double.TryParse(span, out double val)) return (int)val;
-            return 0;
+            AppendLog("【帳務】手動觸發帳務與庫存及委託查詢...");
+            QueryTodayPnL();
+            QueryCurrentPositions();
+            QueryPendingOrders();
         }
 
-        // ==================== 3. 實時行情背景 Debounce 計算 Task 迴圈 ===================='''
-content = content.replace('        // ==================== 3. 實時行情背景 Debounce 計算 Task 迴圈 ====================', parse_first_price)
-
-# 8. AnalysisWorkerLoopAsync completely event-driven
-worker_loop_old = '''        private async Task AnalysisWorkerLoopAsync(CancellationToken token)
+        private void UpdateMarginUI(double margin)
         {
-            // 將 CancellationToken 的 WaitHandle 與 _analysisEvent 組合，達成全睡眠零 CPU 佔用等待
-            var handles = new WaitHandle[] { _analysisEvent, token.WaitHandle };
+            lblMargin.Text = $"NT$ {margin:N0}";
+            if (margin > 0)
+                lblMargin.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(220, 220, 220));
+        }
 
-            while (!token.IsCancellationRequested)
-            {
-                // 等待 CPU 喚醒 (有 Tick 寫入才進來，避免無意義空轉)
-                int which = WaitHandle.WaitAny(handles);
-                if (token.IsCancellationRequested || which == 1) break;
-
-                // 150ms 頻率防抖動 (對應舊版 ANALYSIS_DEBOUNCE_SEC = 0.15 秒)
-                try { await Task.Delay(150, token); } catch (OperationCanceledException) { break; }
-                _analysisEvent.Reset(); // 清除 Debounce 殘留訊號
-
-                try
-                {
-                    // 世代驗證，如果運算前 _uiGeneration 被切換(換盤/回放)，放棄本次
-                    int gen = _uiGeneration;
-
-                    // 在獨立背景執行緒全速運算最新狀態
-                    var result = RunRealtimeAnalysisCompute();
-                    
-                    // 運算完成後丟回主執行緒更新 UI (WPF RichTextBox, DataGrids, Labels)
-                    _ = Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        if (_uiGeneration != gen) return; // 世代過期，丟棄結果
-                        ApplyRealtimeAnalysisUI(result);
-                    }));
-                }
-                catch (Exception ex)
-                {
-                    // 攔截並紀錄背景執行緒的例外，防止 Silent Crash
-                    _ = Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        AppendLog($"🚨【量化計算崩潰】核心計算背景執行緒發生未知錯誤: {ex.Message}\\n{ex.StackTrace}");
-                    }));
-                }
-            }
-        }'''
-
-worker_loop_new = '''        private void AnalysisWorkerLoop(CancellationToken token)
+        private void UpdatePnLUI(double pnl)
         {
-            var handles = new WaitHandle[] { _analysisEvent, token.WaitHandle };
+            lblTodayPnL.Text = $"NT$ {pnl:N0}";
+            if (pnl > 0)
+                lblTodayPnL.Foreground = System.Windows.Media.Brushes.Red;
+            else if (pnl < 0)
+                lblTodayPnL.Foreground = System.Windows.Media.Brushes.LimeGreen;
+            else
+                lblTodayPnL.Foreground = System.Windows.Media.Brushes.LightGray;
+        }
 
-            while (!token.IsCancellationRequested)
-            {
-                // 真正的事件驅動 (Event-Driven)：平時完全休眠 (0% CPU)，有 Tick 瞬間喚醒，0 等待延遲
-                int which = WaitHandle.WaitAny(handles);
-                if (token.IsCancellationRequested || which == 1) break;
+        private void InitYuantaOrd()
+        {
+            if (_yuantaOrd != null) return;
+            _yuantaOrd = new YuantaOrdLib.YuantaOrdClass();
+            _yuantaOrd.OnLogonS += OnOrdLogonS;
+            _yuantaOrd.OnUserDefinsFuncResult += OnOrdUserDefinsFuncResult;
+            _yuantaOrd.OnReportQuery += OnOrdReportQuery;
+            _yuantaOrd.OnOrdMatF += OnOrdMatF;
+            _pnlCalculator.Reset();
+        }
 
-                // 移除所有 Task.Delay 造成的 150ms 人工延遲，達成極低延遲架構
-                _analysisEvent.Reset(); 
+        private int LoginYuantaOrd(string user, string pwd)
+        {
+            if (_yuantaOrd == null) return -1;
+            return _yuantaOrd.SetFutOrdConnection("api.yuanta.com.tw", 443, user, pwd);
+        }
 
-                try
+        private void OnOrdLogonS(int status, string msg)
+        {
+            Dispatcher.BeginInvoke(new Action(() => {
+                AppendLog($"【下單】登入狀態: {status} - {msg}");
+                if (status == 0) {
+                    QueryTodayPnL();
+                    QueryCurrentPositions();
+                    QueryPendingOrders();
+                }
+            }));
+        }
+
+        private void QueryTodayPnL()
+        {
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount)) return;
+            string param = $"Func=FA003|bhno={_currentBranch}|acno={_currentAccount}|suba=|type=1|currency=TWD";
+            _yuantaOrd.UserDefinsFunc(param, "FA003");
+        }
+
+        private void QueryCurrentPositions()
+        {
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount)) return;
+            string param = $"Func=FA002|bhno={_currentBranch}|acno={_currentAccount}|suba=|kind=F|FC=N";
+            _yuantaOrd.UserDefinsFunc(param, "FA002");
+        }
+
+        private void QueryPendingOrders()
+        {
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount)) return;
+            _yuantaOrd.ReportQuery("F", _currentBranch, _currentAccount, "", "1", "3", "0");
+        }
+
+        private void OnOrdUserDefinsFuncResult(int RowCount, string Results, string WorkID)
+        {
+            Dispatcher.BeginInvoke(new Action(() => {
+                if (WorkID == "FA003" && RowCount > 0)
                 {
-                    int gen = _uiGeneration;
-
-                    // 背景全速運算最新狀態 (Zero Allocation / Lock Free)
-                    var result = RunRealtimeAnalysisCompute();
-                    
-                    // 為了避免 0 延遲運算導致 Dispatcher UI 卡死，我們將結果透過 Lock-Free 通道傳送
-                    // 並在 60FPS 的 UI Rendering 事件中無鎖撈取
-                    if (_uiGeneration == gen)
-                    {
-                        System.Threading.Interlocked.Exchange(ref _latestAnalysisResult, result);
+                    string[] fields = Results.Split('|');
+                    int colCount = fields.Length / RowCount;
+                    int equityIdx = -1;
+                    for (int j = 0; j < colCount; j++) {
+                        if (fields[j].Trim().ToUpper() == "EQUITY") equityIdx = j;
+                    }
+                    if (equityIdx != -1 && RowCount > 1 && equityIdx < fields.Length) {
+                        string val = fields[colCount + equityIdx].Trim();
+                        if (double.TryParse(val, out double eq)) UpdateMarginUI(eq);
                     }
                 }
-                catch (Exception ex)
+                else if (WorkID == "FA002")
                 {
-                    _ = Dispatcher.BeginInvoke(new Action(() =>
+                    if (RowCount == 0 || Results.Contains("TOTAL_OFF_POSITION=0") || Results.Contains("查無資料"))
                     {
-                        AppendLog($"🚨【量化計算崩潰】核心計算背景執行緒發生未知錯誤: {ex.Message}\\n{ex.StackTrace}");
-                    }));
+                        lblCurrentPosition.Text = "無部位";
+                        return;
+                    }
+                    string[] fields = Results.Split('|');
+                    int colCount = fields.Length / RowCount;
+                    int bIdx = -1, sIdx = -1, pIdx = -1;
+                    for (int j = 0; j < colCount; j++) {
+                        string col = fields[j].Trim().ToUpper();
+                        if (col == "BS") bIdx = j;
+                        if (col == "OFF_POSITION") sIdx = j;
+                        if (col == "PRICE") pIdx = j;
+                    }
+                    if (bIdx != -1 && sIdx != -1 && pIdx != -1 && RowCount > 1) {
+                        string bs = fields[colCount + bIdx].Trim();
+                        string lots = fields[colCount + sIdx].Trim();
+                        string price = fields[colCount + pIdx].Trim();
+                        lblCurrentPosition.Text = $"{lots} 口 (成本: {price})";
+                    }
                 }
-            }
-        }'''
-
-content = content.replace(worker_loop_old, worker_loop_new)
-content = content.replace('_analysisTask = AnalysisWorkerLoopAsync(_analysisCts.Token);', '_analysisTask = Task.Run(() => AnalysisWorkerLoop(_analysisCts.Token));')
-
-# 9. Fix RunRealtimeAnalysisCompute lock(_rtLock)
-run_rt_old = '''            var tradesSnapshot = new Dictionary<string, IReadOnlyList<TradeTick>>();
-            var stateSnapshot = new Dictionary<string, TradingState>();
-
-            lock (_rtLock)
-            {
-                var tradesSource = _isReplaying ? _replaySymbolTrades : _liveSymbolTrades;
-                var stateSource = _isReplaying ? _replayRtState : _rtState;
-
-                foreach (var symbol in new[] { "TXF", "MXF" })
-                {
-                    tradesSnapshot[symbol] = tradesSource[symbol][activeSession]; // Zero Allocation
-                    stateSnapshot[symbol] = stateSource[symbol][activeSession].Clone();
-                }
-            }'''
-
-run_rt_new = '''            var tradesSnapshot = new Dictionary<string, IReadOnlyList<TradeTick>>();
-            var stateSnapshot = new Dictionary<string, TradingState>();
-
-            var tradesSource = _isReplaying ? _replaySymbolTrades : _liveSymbolTrades;
-            var stateSource = _isReplaying ? _replayRtState : _rtState;
-
-            foreach (var symbol in new[] { "TXF", "MXF" })
-            {
-                // Lock-Free 參考拷貝 (Zero Allocation)
-                tradesSnapshot[symbol] = tradesSource[symbol][activeSession]; 
-                
-                var state = stateSource[symbol][activeSession];
-                lock (state)
-                {
-                    stateSnapshot[symbol] = state.Clone();
-                }
-            }'''
-content = content.replace(run_rt_old, run_rt_new)
-
-# 10. Change Dictionary<...List<TradeTick>> to ConcurrentAppendOnlyList
-content = content.replace('private readonly Dictionary<string, Dictionary<string, List<TradeTick>>> _liveSymbolTrades;', 'private readonly Dictionary<string, Dictionary<string, ExtremeSignalAppCS.Models.ConcurrentAppendOnlyList<TradeTick>>> _liveSymbolTrades;')
-content = content.replace('private readonly Dictionary<string, Dictionary<string, List<TradeTick>>> _replaySymbolTrades;', 'private readonly Dictionary<string, Dictionary<string, ExtremeSignalAppCS.Models.ConcurrentAppendOnlyList<TradeTick>>> _replaySymbolTrades;')
-content = content.replace('new Dictionary<string, List<TradeTick>> { { "日盤", new() }, { "夜盤", new() } }', 'new Dictionary<string, ExtremeSignalAppCS.Models.ConcurrentAppendOnlyList<TradeTick>> { { "日盤", new() }, { "夜盤", new() } }')
-
-# 11. Remove OnCompositionTargetRendering missing replace logic
-comp_target = '''        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
-        {
-            App.Current.Resources["_temp_offline_trades"] = new Dictionary<string, Dictionary<string, List<TradeTick>>>();
-            App.Current.Resources["_temp_offline_signals"] = new Dictionary<string, string>();
-            System.Windows.Media.CompositionTarget.Rendering += OnCompositionTargetRendering;
+            }));
         }
 
-        private void MainWindow_Unloaded(object sender, RoutedEventArgs e)
+        private void OnOrdReportQuery(int RowCount, string Results)
         {
-            System.Windows.Media.CompositionTarget.Rendering -= OnCompositionTargetRendering;
+            Dispatcher.BeginInvoke(new Action(() => {
+                PendingOrders.Clear();
+                if (RowCount == 0 || string.IsNullOrEmpty(Results) || Results.Contains("查無資料")) return;
+                string[] fields = Results.Split('|');
+                int colCount = fields.Length / RowCount;
+                int ordIdx = -1, cmdIdx = -1, bsIdx = -1, priceIdx = -1, qtyIdx = -1;
+                for (int j = 0; j < colCount; j++) {
+                    string col = fields[j].Trim().ToUpper();
+                    if (col == "ORDER_NO") ordIdx = j;
+                    if (col == "COMMODITY") cmdIdx = j;
+                    if (col == "BS") bsIdx = j;
+                    if (col == "PRICE" || col == "ORDER_PRICE") priceIdx = j;
+                    if (col == "ORDER_QTY" || col == "QTY" || col.Contains("QTY")) qtyIdx = j;
+                }
+                if (ordIdx != -1 && cmdIdx != -1 && bsIdx != -1 && priceIdx != -1 && qtyIdx != -1) {
+                    for (int i = 1; i < RowCount; i++) {
+                        int r = i * colCount;
+                        if (r + qtyIdx < fields.Length) {
+                            string bsStr = fields[r + bsIdx].Trim() == "B" ? "買進" : "賣出";
+                            double price = 0;
+                            double.TryParse(fields[r + priceIdx].Trim(), out price);
+                            int qty = 0;
+                            int.TryParse(fields[r + qtyIdx].Trim(), out qty);
+                            PendingOrders.Add(new PendingOrder {
+                                OrderNo = fields[r + ordIdx].Trim(),
+                                Symbol = fields[r + cmdIdx].Trim(),
+                                Name = fields[r + cmdIdx].Trim(),
+                                BS = bsStr,
+                                Price = price,
+                                Qty = qty
+                            });
+                        }
+                    }
+                }
+            }));
         }
 
-        private int _renderMxfPrice;
-        private string _renderMxfTime = "";
-        private int _lastRenderedMxfPrice;
-        private string _lastRenderedMxfTime = "";
-
-        private void OnCompositionTargetRendering(object? sender, EventArgs e)
+        private void CancelOrder_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (!_isInitialized || _isReplaying) return;
-            
-            var analysisResult = System.Threading.Interlocked.Exchange(ref _latestAnalysisResult, null);
-            if (analysisResult != null)
-            {
-                ApplyRealtimeAnalysisUI(analysisResult);
+            if (sender is System.Windows.Controls.Button btn && btn.Tag is PendingOrder order && _yuantaOrd != null) {
+                AppendLog($"【委託】送出取消指令: {order.OrderNo}");
+                _yuantaOrd.SendOrderF("01", "F", _currentBranch, _currentAccount, "", order.OrderNo, order.BS == "買進" ? "B" : "S", order.Symbol, "0", "0", "0", "L", "0", "", "");
+                System.Threading.Tasks.Task.Delay(1000).ContinueWith(_ => Dispatcher.BeginInvoke(new Action(() => QueryPendingOrders())));
             }
-            
-            // 每幀無鎖撈取最新的 volatile 變數
-            int mxfPrice = _renderMxfPrice;
-            string mxfTime = System.Threading.Volatile.Read(ref _renderMxfTime);
+        }
 
-            if (mxfPrice > 0 && (mxfPrice != _lastRenderedMxfPrice || mxfTime != _lastRenderedMxfTime))
-            {
-                _lastRenderedMxfPrice = mxfPrice;
-                _lastRenderedMxfTime = mxfTime;
-                
-                // 更新 UI 文字，無 150ms 延遲
-                lblLivePrice.Text = $"| 台指: {mxfPrice}";
-                
-                if (wndUnbrokenK != null)
-                {
-                    // 觸發不破Ｋ即時判定
-                    wndUnbrokenK.CheckInstantUnbrokenBreakout(mxfPrice, mxfTime);
-                }
-            }
+        private void OnOrdMatF(string symbol, string mattime, string matpri, string tmatqty)
+        {
+            QueryCurrentPositions();
+            QueryPendingOrders();
         }
 '''
-closing_idx = content.find('protected override void OnClosing(System.ComponentModel.CancelEventArgs e)')
-if closing_idx > 0:
-    content = content[:closing_idx] + comp_target + '\\n        ' + content[closing_idx:]
 
-with open('MainWindow.xaml.cs', 'w', encoding='utf-8') as f:
+content = re.sub(r'(\s*\}\s*\n\s*\}\s*\n\s*/// <summary>\s*\n\s*/// DispatcherTimer)', newMethods + r'\1', content)
+
+content += '''
+    public class PendingOrder
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string BS { get; set; } = string.Empty;
+        public int Qty { get; set; }
+        public double Price { get; set; }
+        public string OrderNo { get; set; } = string.Empty;
+        public string DisplayText => $"{Name} {BS} {Qty}口 @ {Price}";
+    }
+'''
+
+content = content.replace('InitializeComponent();', 'InitializeComponent();\n            icPendingOrders.ItemsSource = PendingOrders;')
+
+content = content.replace('int ordRes = LoginYuantaOrd(_mktUser, _mktPwd);', 'InitYuantaOrd();\n                                      int ordRes = LoginYuantaOrd(_mktUser, _mktPwd);')
+content = content.replace('_yuantaOrd.DoLogout();', '_yuantaOrd.DoLogout();\n                    _yuantaOrd.OnLogonS -= OnOrdLogonS;\n                    _yuantaOrd.OnUserDefinsFuncResult -= OnOrdUserDefinsFuncResult;\n                    _yuantaOrd.OnReportQuery -= OnOrdReportQuery;\n                    _yuantaOrd.OnOrdMatF -= OnOrdMatF;')
+
+
+with open(file_path, 'w', encoding='utf-8') as f:
     f.write(content)
-
-print("Patch applied successfully")
+print('Done!')

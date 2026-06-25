@@ -50,6 +50,38 @@ namespace ExtremeSignalAppCS.Controls
         private readonly Pen _highlightPen = new(new SolidColorBrush(Color.FromRgb(255, 255, 255)), 2.0);
         private readonly Pen _stopLossPen = new(new SolidColorBrush(Color.FromRgb(255, 215, 0)), 1.5);
         private readonly Pen _observerStopLossPen = new(new SolidColorBrush(Color.FromRgb(255, 0, 255)), 2.0);
+        
+        private readonly Pen _positionProfitPen = new(new SolidColorBrush(Color.FromRgb(235, 75, 75)), 1.5);
+        private readonly Pen _positionLossPen = new(new SolidColorBrush(Color.FromRgb(40, 167, 69)), 1.5);
+        private readonly Pen _positionNeutralPen = new(new SolidColorBrush(Color.FromRgb(150, 150, 150)), 1.5);
+
+        private double? _positionCostPrice;
+        /// <summary>
+        /// 部位平均成本價格
+        /// </summary>
+        public double? PositionCostPrice
+        {
+            get => _positionCostPrice;
+            set
+            {
+                _positionCostPrice = value;
+                InvalidateVisual();
+            }
+        }
+
+        private int _positionProfitState = 0;
+        /// <summary>
+        /// 部位損益狀態：1=賺錢, -1=賠錢, 0=平手
+        /// </summary>
+        public int PositionProfitState
+        {
+            get => _positionProfitState;
+            set
+            {
+                _positionProfitState = value;
+                InvalidateVisual();
+            }
+        }
 
         private double? _highlightPrice;
         /// <summary>
@@ -136,6 +168,9 @@ namespace ExtremeSignalAppCS.Controls
             _highlightPen.Freeze();
             _stopLossPen.Freeze();
             _observerStopLossPen.Freeze();
+            _positionProfitPen.Freeze();
+            _positionLossPen.Freeze();
+            _positionNeutralPen.Freeze();
         }
 
         public void SetData(List<KlineBar> candles, double minX, double maxX, double minY, double maxY)
@@ -296,6 +331,14 @@ namespace ExtremeSignalAppCS.Controls
                 {
                     double hy = GetCanvasY(_highlightPrice.Value, h);
                     drawingContext.DrawLine(_highlightPen, new Point(0, hy), new Point(Math.Max(0, w - RightMargin), hy));
+                }
+
+                // 6.2 繪製部位平均成本線
+                if (_positionCostPrice.HasValue)
+                {
+                    double pcy = GetCanvasY(_positionCostPrice.Value, h);
+                    Pen pcPen = _positionProfitState > 0 ? _positionProfitPen : (_positionProfitState < 0 ? _positionLossPen : _positionNeutralPen);
+                    drawingContext.DrawLine(pcPen, new Point(0, pcy), new Point(Math.Max(0, w - RightMargin), pcy));
                 }
 
                 // 6.5. 繪製停損黃色橫線
@@ -572,6 +615,14 @@ namespace ExtremeSignalAppCS.Controls
         private readonly TranslateTransform _priceTagTransform;
         private readonly System.Windows.Threading.DispatcherTimer _priceTagTimer;
 
+        private readonly Border _positionTagBorder;
+        private readonly TextBlock _positionQtyText;
+        private readonly TextBlock _positionPnlText;
+        private readonly TranslateTransform _positionTagTransform;
+        private bool _isDraggingPosition;
+        private Point _positionDragStartMouse;
+        private double _positionDragStartX;
+
         private string _lastTickTimeStr = "";
 
         private List<KlineBar> _candles = [];
@@ -777,6 +828,91 @@ namespace ExtremeSignalAppCS.Controls
                 }
             };
             _priceTagTimer.Start();
+
+            // 7. 新增部位與損益標籤
+            _positionQtyText = new TextBlock
+            {
+                Foreground = Brushes.Black,
+                FontFamily = new FontFamily("Consolas, Microsoft JhengHei"),
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0)
+            };
+
+            _positionPnlText = new TextBlock
+            {
+                Foreground = Brushes.Black,
+                FontFamily = new FontFamily("Consolas, Microsoft JhengHei"),
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var posStackPanel = new StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            posStackPanel.Children.Add(_positionQtyText);
+            posStackPanel.Children.Add(_positionPnlText);
+
+            _positionTagBorder = new Border
+            {
+                Background = Brushes.Gray,
+                BorderBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(6, 2, 6, 2),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+                VerticalAlignment = System.Windows.VerticalAlignment.Top,
+                Child = posStackPanel,
+                Visibility = Visibility.Collapsed,
+                Cursor = System.Windows.Input.Cursors.SizeWE // 提示可左右拖曳
+            };
+
+            _positionTagTransform = new TranslateTransform();
+            _positionTagBorder.RenderTransform = _positionTagTransform;
+
+            _positionTagBorder.MouseLeftButtonDown += (s, e) =>
+            {
+                _isDraggingPosition = true;
+                _positionDragStartMouse = e.GetPosition(this);
+                _positionDragStartX = _positionTagTransform.X;
+                _positionTagBorder.CaptureMouse();
+                e.Handled = true; // 防止觸發底層的圖表平移
+            };
+
+            _positionTagBorder.MouseMove += (s, e) =>
+            {
+                if (_isDraggingPosition)
+                {
+                    Point currentMouse = e.GetPosition(this);
+                    double newX = _positionDragStartX + (currentMouse.X - _positionDragStartMouse.X);
+
+                    double chartW = ActualWidth;
+                    double panelW = _positionTagBorder.ActualWidth > 0 ? _positionTagBorder.ActualWidth : 80;
+
+                    // 限制只能在圖表範圍內移動
+                    double minX = 0;
+                    double maxX = chartW - panelW - KLinePainter.RightMargin;
+
+                    _positionTagTransform.X = Math.Max(minX, Math.Min(newX, maxX));
+                    e.Handled = true;
+                }
+            };
+
+            _positionTagBorder.MouseLeftButtonUp += (s, e) =>
+            {
+                if (_isDraggingPosition)
+                {
+                    _isDraggingPosition = false;
+                    _positionTagBorder.ReleaseMouseCapture();
+                    e.Handled = true;
+                }
+            };
+
+            Children.Add(_positionTagBorder);
 
             // 6. 註冊滑鼠事件 (Zoom 與 Pan)
             MouseMove += KLineChartControl_MouseMove;
@@ -1447,6 +1583,8 @@ namespace ExtremeSignalAppCS.Controls
             _isLockedCrosshair = false;
             _infoPanel.Visibility = Visibility.Collapsed;
             if (_priceTagBorder != null) _priceTagBorder.Visibility = Visibility.Collapsed;
+            if (_positionTagBorder != null) _positionTagBorder.Visibility = Visibility.Collapsed;
+            _painter.PositionCostPrice = null;
         }
 
         /// <summary>
@@ -1542,8 +1680,93 @@ namespace ExtremeSignalAppCS.Controls
             return _candles[index];
         }
 
+        /// <summary>
+        /// 更新即時部位與損益標示
+        /// </summary>
+        /// <param name="quantity">部位數量</param>
+        /// <param name="averageCost">平均成本</param>
+        /// <param name="unrealizedPnl">未實現損益</param>
+        public void UpdatePositionInfo(int quantity, double averageCost, double unrealizedPnl)
+        {
+            if (quantity == 0)
+            {
+                _painter.PositionCostPrice = null;
+                _positionTagBorder.Visibility = Visibility.Collapsed;
+                // 重置 X 到最右側
+                double chartW = ActualWidth;
+                double panelW = _positionTagBorder.ActualWidth > 0 ? _positionTagBorder.ActualWidth : 80;
+                _positionTagTransform.X = Math.Max(0, chartW - panelW - KLinePainter.RightMargin - 10);
+                return;
+            }
+
+            int profitState = unrealizedPnl > 0 ? 1 : (unrealizedPnl < 0 ? -1 : 0);
+            
+            _painter.PositionCostPrice = averageCost;
+            _painter.PositionProfitState = profitState;
+
+            _positionQtyText.Text = Math.Abs(quantity).ToString();
+            
+            string sign = unrealizedPnl > 0 ? "+" : (unrealizedPnl < 0 ? "-" : "");
+            _positionPnlText.Text = $"{sign}${Math.Abs(unrealizedPnl):N0}";
+
+            if (profitState > 0)
+            {
+                _positionTagBorder.Background = new SolidColorBrush(Color.FromRgb(235, 75, 75)); // 紅
+                _positionQtyText.Foreground = Brushes.Black;
+                _positionPnlText.Foreground = Brushes.Black;
+            }
+            else if (profitState < 0)
+            {
+                _positionTagBorder.Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)); // 綠
+                _positionQtyText.Foreground = Brushes.Black;
+                _positionPnlText.Foreground = Brushes.Black;
+            }
+            else
+            {
+                _positionTagBorder.Background = new SolidColorBrush(Color.FromRgb(150, 150, 150)); // 灰
+                _positionQtyText.Foreground = Brushes.White;
+                _positionPnlText.Foreground = Brushes.White;
+            }
+
+            _positionTagBorder.Visibility = Visibility.Visible;
+
+            // 確保有重新計算佈局，才能取得正確的 ActualWidth
+            if (_positionTagBorder.ActualWidth == 0)
+            {
+                _positionTagBorder.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+            }
+
+            // 同步更新 Y 軸座標
+            SyncPositionTagY();
+        }
+
+        private void SyncPositionTagY()
+        {
+            if (_painter.PositionCostPrice == null) return;
+            double chartH = ActualHeight;
+            double chartW = ActualWidth;
+            if (chartH <= 0 || chartW <= 0 || _painter == null) return;
+            
+            double pcy = _painter.GetCanvasY(_painter.PositionCostPrice.Value, chartH);
+            double panelH = _positionTagBorder.ActualHeight > 0 ? _positionTagBorder.ActualHeight : 24;
+            double panelW = _positionTagBorder.ActualWidth > 0 ? _positionTagBorder.ActualWidth : 80;
+            
+            // 將標籤放置於線的正中央
+            double newY = pcy - panelH / 2;
+            _positionTagTransform.Y = newY;
+
+            // 確保 X 座標不會跑出可視範圍（例如視窗縮小導致被吃掉）
+            double maxX = chartW - panelW - KLinePainter.RightMargin;
+            if (_positionTagTransform.X > maxX)
+            {
+                _positionTagTransform.X = Math.Max(0, maxX);
+            }
+        }
+
         private void UpdatePriceTag()
         {
+            SyncPositionTagY();
+
             if (_candles == null || _candles.Count == 0 || ActualWidth <= 0 || ActualHeight <= 0)
             {
                 if (_priceTagBorder != null) _priceTagBorder.Visibility = Visibility.Collapsed;

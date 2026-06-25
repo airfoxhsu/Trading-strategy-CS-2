@@ -1,0 +1,19 @@
+內含檔案：
+1.開發說明
+2.32位元API元件(API資料夾)
+3.64位元API元件(API_x64資料夾)
+
+使用步驟：
+1.將需要的API元件資料夾，完整複製到C:\Yuanta中。以32位元為例，API資料夾中的檔案會放置在C:\Yuanta\API內。
+2.開啟安裝檔，32位元為install_YTFutOrdAP.bat檔案、64位元為install_YTFutOrdAP64.bat檔案。
+
+注意事項：
+1.開啟安裝檔完成後，不可隨意異動資料夾內API檔案，否則可能造成API執行異常。
+2.每次版本更新時，均需重新執行安裝，不可僅更新檔案。
+3.常見的安裝失敗，與解決方法如下：
+ (1)安裝者未使用系統管理者權限帳號登入，請以系統管理者身分執行安裝程式。
+ (2)安裝的電腦缺少需要的微軟公用程式，請至微軟官網下載vcredist_x86.exe檔案後再安裝。
+4.程式開發方式，請參考元大BToCAPI格式.PDF文件。
+5.連線位置
+  測試環境 IP:apitest.yuantafutures.com.tw Port:80
+  正式環境 IP:api.yuantafutures.com.tw Port:80/443

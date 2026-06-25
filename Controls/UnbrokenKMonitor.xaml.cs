@@ -70,10 +70,16 @@ namespace ExtremeSignalAppCS.Controls
             // 我們已經完全棄用分K機制，所以直接取第一組結果作為唯一來源，避免重複統計
             var uniqueResults = resultsMap.Values.FirstOrDefault() ?? new List<SimulationResult>();
 
+            int actualTotalLong = 0;
+            int actualTotalShort = 0;
+
             foreach (var item in uniqueResults)
             {
                 if (item.Tags.Contains("history") || item.Tags.Contains("annotation"))
                     continue;
+
+                if (item.Type == "做多") actualTotalLong++;
+                if (item.Type == "做空") actualTotalShort++;
 
                     string sigLabel = item.DisplayTitle;
                     string stopLossVal = item.StopLossDisplay;
@@ -232,7 +238,7 @@ namespace ExtremeSignalAppCS.Controls
             // 更新內部狀態
             _currentUnbrokenMap = tempUnbrokenMap;
             _currentUnbrokenTimeMap = tempTimeMap;
-            UpdateUI(currentPrice, tradeTimeStr, computedHistory, computedDir, newlyAddedKey);
+            UpdateUI(currentPrice, tradeTimeStr, computedHistory, computedDir, newlyAddedKey, actualTotalLong, actualTotalShort);
         }
 
         /// <summary>
@@ -303,7 +309,7 @@ namespace ExtremeSignalAppCS.Controls
         /// 主執行緒 UI 著色與排版更新。
         /// 智慧快取滾動條位置，防止更新文字時畫面抖動跳躍。
         /// </summary>
-        private void UpdateUI(string currentPrice, string tradeTimeStr = "", List<TrendEvent>? newHistory = null, int? newDir = null, (string Type, string Price)? newlyAddedKey = null)
+        private void UpdateUI(string currentPrice, string tradeTimeStr = "", List<TrendEvent>? newHistory = null, int? newDir = null, (string Type, string Price)? newlyAddedKey = null, int totalLongCount = 0, int totalShortCount = 0)
         {
             // 1. 快取滾動條位置
             double vOffset = txtDisplay.VerticalOffset;
@@ -371,8 +377,37 @@ namespace ExtremeSignalAppCS.Controls
             int maxLongCount = longEntries.Count > 0 ? longEntries.Max(x => x.count) : -1;
 
             // 更新統計顯示條
-            lblSummaryShort.Text = $"做空共有 {totalShortIntervals} 項";
-            lblSummaryLong.Text = $"做多共有 {totalLongIntervals} 項";
+            if (totalShortCount > totalLongCount)
+            {
+                lblTotalStats.Text = $"總計: 空 {totalShortCount} 筆 > 多 {totalLongCount} 筆";
+                lblTotalStats.Foreground = new SolidColorBrush((Color)System.Windows.Media.ColorConverter.ConvertFromString("#28A745"));
+            }
+            else if (totalLongCount > totalShortCount)
+            {
+                lblTotalStats.Text = $"總計: 空 {totalShortCount} 筆 < 多 {totalLongCount} 筆";
+                lblTotalStats.Foreground = new SolidColorBrush((Color)System.Windows.Media.ColorConverter.ConvertFromString("#EB4B4B"));
+            }
+            else
+            {
+                lblTotalStats.Text = $"總計: 空 {totalShortCount} 筆 = 多 {totalLongCount} 筆";
+                lblTotalStats.Foreground = Brushes.White;
+            }
+
+            if (totalShortIntervals > totalLongIntervals)
+            {
+                lblUnbrokenStats.Text = $"| 未破停損: 空 {totalShortIntervals} 項 > 多 {totalLongIntervals} 項";
+                lblUnbrokenStats.Foreground = new SolidColorBrush((Color)System.Windows.Media.ColorConverter.ConvertFromString("#28A745"));
+            }
+            else if (totalLongIntervals > totalShortIntervals)
+            {
+                lblUnbrokenStats.Text = $"| 未破停損: 空 {totalShortIntervals} 項 < 多 {totalLongIntervals} 項";
+                lblUnbrokenStats.Foreground = new SolidColorBrush((Color)System.Windows.Media.ColorConverter.ConvertFromString("#EB4B4B"));
+            }
+            else
+            {
+                lblUnbrokenStats.Text = $"| 未破停損: 空 {totalShortIntervals} 項 = 多 {totalLongIntervals} 項";
+                lblUnbrokenStats.Foreground = Brushes.White;
+            }
 
             // 增量填入 Paragraph，並且對多/空標題進行發光著色
             // 使用單一 Paragraph 且設定 Margin=0 以精準控制換行距離
@@ -759,8 +794,10 @@ namespace ExtremeSignalAppCS.Controls
             }
             txtDisplay.Document.Blocks.Clear();
             lblTitle.Text = "🛡️ 未破分 K 停損監控";
-            lblSummaryShort.Text = "做空共有 0 項";
-            lblSummaryLong.Text = "做多共有 0 項";
+            lblTotalStats.Text = "總計: 空 0 筆 = 多 0 筆";
+            lblTotalStats.Foreground = Brushes.White;
+            lblUnbrokenStats.Text = "| 未破停損: 空 0 項 = 多 0 項";
+            lblUnbrokenStats.Foreground = Brushes.White;
             
             _trendDirection = 0;
             _selectedTrendTime = null;
@@ -784,8 +821,10 @@ namespace ExtremeSignalAppCS.Controls
 
             txtDisplay.Document.Blocks.Clear();
             lblTitle.Text = "🛡️ 未破分 K 停損監控";
-            lblSummaryShort.Text = "做空共有 0 項";
-            lblSummaryLong.Text = "做多共有 0 項";
+            lblTotalStats.Text = "總計: 空 0 筆 = 多 0 筆";
+            lblTotalStats.Foreground = Brushes.White;
+            lblUnbrokenStats.Text = "| 未破停損: 空 0 項 = 多 0 項";
+            lblUnbrokenStats.Foreground = Brushes.White;
             
             _trendDirection = 0;
             _selectedTrendTime = null;
