@@ -106,7 +106,9 @@ namespace ExtremeSignalAppCS.Helper
             if (scrollViewer != null)
             {
                 // 判斷目前是否在最底部 (容許 5px 誤差)
-                isAtBottom = scrollViewer.VerticalOffset >= (scrollViewer.ScrollableHeight - 5.0);
+                // 💡 智慧滾動優化：若當前 ScrollableHeight 極小 (<= 5.0)，代表原內容極少，此時加入新內容應自動滾到底部
+                isAtBottom = (scrollViewer.ScrollableHeight <= 5.0) || 
+                             (scrollViewer.VerticalOffset >= (scrollViewer.ScrollableHeight - 5.0));
                 currentOffset = scrollViewer.VerticalOffset;
             }
 

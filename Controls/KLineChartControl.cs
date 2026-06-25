@@ -1450,6 +1450,15 @@ namespace ExtremeSignalAppCS.Controls
         }
 
         /// <summary>
+        /// 取得或設定使用者是否已手動縮放或平移圖表（用於智慧避讓判定）。
+        /// </summary>
+        public bool IsZoomedOrPanned
+        {
+            get => _isZoomedOrPanned;
+            set => _isZoomedOrPanned = value;
+        }
+
+        /// <summary>
         /// 將圖表視界中心平移對焦到指定 K 線，並更新右上角面板與十字游標。
         /// </summary>
         public void FocusCandle(int index, int? price = null)

@@ -63,6 +63,7 @@ namespace ExtremeSignalAppCS.Services
         private string _pendingLongTimeLabelCache = "";
         private string _pendingShortTimeLabelCache = "";
         private string _klineCacheSessionKey = "";
+        private string _lastSigFingerprint = "";
 
         // (已移除 _simCurrentKlineKey 等分 K 快取變數)
 
@@ -837,13 +838,47 @@ namespace ExtremeSignalAppCS.Services
             double interval = intervalMins * 60.0;
             if (interval <= 0) interval = 1800.0;
 
+            // ═══ 訊號指紋偵測與 K 線快取重置 ═══
+            var sbSig = new System.Text.StringBuilder();
+            if (txfSigs != null)
+            {
+                for (int i = 0; i < txfSigs.Count; i++)
+                {
+                    sbSig.Append(txfSigs[i].DisplayTitle).Append('_').Append(txfSigs[i].TrigTime).Append('|');
+                }
+            }
+            if (mxfSigs != null)
+            {
+                for (int i = 0; i < mxfSigs.Count; i++)
+                {
+                    sbSig.Append(mxfSigs[i].DisplayTitle).Append('_').Append(mxfSigs[i].TrigTime).Append('|');
+                }
+            }
+            string currentFingerprint = sbSig.ToString();
+
+            if (_lastSigFingerprint != currentFingerprint)
+            {
+                _cachedKlineData.Clear();
+                _cachedBreakouts.Clear();
+                _lastCompletedBucketIdx = -1;
+                _prevHighCache = null;
+                _prevLowCache = null;
+                _pendingLongTriggerPriceCache = null;
+                _pendingShortTriggerPriceCache = null;
+                _pendingLongSignalObjsCache.Clear();
+                _pendingShortSignalObjsCache.Clear();
+                _pendingLongTimeLabelCache = "";
+                _pendingShortTimeLabelCache = "";
+                _lastSigFingerprint = currentFingerprint;
+            }
+
             var signalTVals = new List<(double TVals, string SigType, SimulationResult SigObj)>();
             
             // 處理大臺與小臺訊號，彙整出所有突破觸發的 B 點秒數
             var sigGroups = new List<(string Prefix, List<SimulationResult> Sigs)>
             {
-                ("大臺", txfSigs),
-                ("小臺", mxfSigs)
+                ("大臺", txfSigs ?? new List<SimulationResult>()),
+                ("小臺", mxfSigs ?? new List<SimulationResult>())
             };
 
             foreach (var group in sigGroups)
@@ -859,7 +894,7 @@ namespace ExtremeSignalAppCS.Services
                     {
                         if (!string.IsNullOrEmpty(sig.TrigTime))
                         {
-                            double bTVal = ParseTime(sig.TrigTime);
+                            double bTVal = ExtremeSignalAppCS.Helper.TimeParser.ParseTime(sig.TrigTime);
                             // 夜盤跨日秒數還原
                             if (sessionName == "夜盤" && bTVal <= 18000.0)
                             {
@@ -1703,6 +1738,7 @@ namespace ExtremeSignalAppCS.Services
             _pendingLongTimeLabelCache = "";
             _pendingShortTimeLabelCache = "";
             _klineCacheSessionKey = "";
+            _lastSigFingerprint = "";
 
             _globalSimSessionKey = "";
             _globalSearchStartShort = 0;

@@ -214,10 +214,25 @@ namespace ExtremeSignalAppCS.Controls
                 }
             }
 
+            // 找出全新新增的停損鍵值
+            (string Type, string Price)? newlyAddedKey = null;
+            if (_currentUnbrokenMap.Count > 0 && tempUnbrokenMap.Count > 0)
+            {
+                var newKeys = tempUnbrokenMap.Keys.Except(_currentUnbrokenMap.Keys).ToList();
+                if (newKeys.Count > 0)
+                {
+                    // 取得觸發時間最晚（最新）的一筆
+                    newlyAddedKey = newKeys.OrderByDescending(k =>
+                    {
+                        return tempTimeMap.TryGetValue(k, out var t) ? ParseTimeStr(t) : 0;
+                    }).FirstOrDefault();
+                }
+            }
+
             // 更新內部狀態
             _currentUnbrokenMap = tempUnbrokenMap;
             _currentUnbrokenTimeMap = tempTimeMap;
-            UpdateUI(currentPrice, tradeTimeStr, computedHistory, computedDir);
+            UpdateUI(currentPrice, tradeTimeStr, computedHistory, computedDir, newlyAddedKey);
         }
 
         /// <summary>
@@ -288,7 +303,7 @@ namespace ExtremeSignalAppCS.Controls
         /// 主執行緒 UI 著色與排版更新。
         /// 智慧快取滾動條位置，防止更新文字時畫面抖動跳躍。
         /// </summary>
-        private void UpdateUI(string currentPrice, string tradeTimeStr = "", List<TrendEvent>? newHistory = null, int? newDir = null)
+        private void UpdateUI(string currentPrice, string tradeTimeStr = "", List<TrendEvent>? newHistory = null, int? newDir = null, (string Type, string Price)? newlyAddedKey = null)
         {
             // 1. 快取滾動條位置
             double vOffset = txtDisplay.VerticalOffset;
@@ -363,7 +378,9 @@ namespace ExtremeSignalAppCS.Controls
             // 使用單一 Paragraph 且設定 Margin=0 以精準控制換行距離
             var pContent = new Paragraph { Margin = new Thickness(0) };
 
-            void AppendUnbrokenEntry(Paragraph pContent, string price, string timeStr, int itemCount, bool isMaxCount)
+            Run? targetRunForCentering = null;
+
+            void AppendUnbrokenEntry(Paragraph pContent, string price, string timeStr, int itemCount, bool isMaxCount, string sigType)
             {
                 var prefixLabel = new Run("  停損價: ");
                 var priceVal = new Run(price);
@@ -375,6 +392,12 @@ namespace ExtremeSignalAppCS.Controls
 
                     prefixLabel.Foreground = Brushes.Yellow;
                     prefixLabel.FontWeight = FontWeights.Bold;
+                }
+
+                // 檢查是否為本次全新新增的停損價，如果是則將該前綴 Run 標記為置中對象
+                if (newlyAddedKey.HasValue && newlyAddedKey.Value.Type == sigType && newlyAddedKey.Value.Price == price)
+                {
+                    targetRunForCentering = prefixLabel;
                 }
 
                 pContent.Inlines.Add(prefixLabel);
@@ -409,7 +432,7 @@ namespace ExtremeSignalAppCS.Controls
                 foreach (var item in shortEntries)
                 {
                     bool isMaxCount = item.count == maxShortCount;
-                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount);
+                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount, "low");
                 }
             }
 
@@ -429,7 +452,7 @@ namespace ExtremeSignalAppCS.Controls
                 foreach (var item in longEntries)
                 {
                     bool isMaxCount = item.count == maxLongCount;
-                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount);
+                    AppendUnbrokenEntry(pContent, item.price, item.timeStr, item.count, isMaxCount, "high");
                 }
             }
 
@@ -439,6 +462,20 @@ namespace ExtremeSignalAppCS.Controls
             }
 
             txtDisplay.Document.Blocks.Add(pContent);
+
+            // 當有指定全新新增的停損價且未進入智慧避讓（即使用者手動 pan/zoom）時，置中滾動到該行
+            if (targetRunForCentering != null)
+            {
+                bool isZoomedOrPanned = _parentApp?.klineChart?.IsZoomedOrPanned ?? false;
+                if (!isZoomedOrPanned)
+                {
+                    var runToCenter = targetRunForCentering;
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        ScrollRunToCenter(runToCenter);
+                    }), System.Windows.Threading.DispatcherPriority.Loaded);
+                }
+            }
 
             // --- 趨勢方向表單邏輯 ---
             if (newHistory != null && newDir != null)
@@ -767,6 +804,55 @@ namespace ExtremeSignalAppCS.Controls
         {
             var text = new System.Windows.Documents.TextRange(txtTrendHistory.Document.ContentStart, txtTrendHistory.Document.ContentEnd).Text;
             System.Windows.Clipboard.SetText(text);
+        }
+
+        /// <summary>
+        /// 將 RichTextBox 內指定的 Run 元素滾動至可見畫面中央。
+        /// </summary>
+        /// <param name="run">要置中滾動的 Run 元素。</param>
+        private void ScrollRunToCenter(Run run)
+        {
+            try
+            {
+                var scrollViewer = GetVisualChild<ScrollViewer>(txtDisplay);
+                if (scrollViewer == null) return;
+
+                // 取得 Run 開頭的 TextPointer
+                TextPointer startPointer = run.ContentStart;
+                
+                // 取得該字元相對於 RichTextBox 的 Rect 區域
+                Rect rect = startPointer.GetCharacterRect(LogicalDirection.Forward);
+                
+                // 計算在文檔中的絕對垂直位置
+                double yInDocument = txtDisplay.VerticalOffset + rect.Top;
+                
+                // 計算使該行顯示於視埠正中央的 VerticalOffset 偏移量
+                double targetOffset = yInDocument - (scrollViewer.ViewportHeight / 2.0);
+                
+                // 執行垂直滾動
+                scrollViewer.ScrollToVerticalOffset(Math.Max(0, targetOffset));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UnbrokenKMonitor] ScrollRunToCenter 發生錯誤: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 深度優先尋找指定 VisualTree 節點下的子控制項。
+        /// </summary>
+        private static T? GetVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null) return null;
+            int numVisuals = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < numVisuals; i++)
+            {
+                DependencyObject v = VisualTreeHelper.GetChild(parent, i);
+                if (v is T t) return t;
+                T? child = GetVisualChild<T>(v);
+                if (child != null) return child;
+            }
+            return null;
         }
     }
 }

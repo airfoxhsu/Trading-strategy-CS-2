@@ -37,4 +37,11 @@
     <PackageReference Include="SkiaSharp.Views.WPF" Version="3.119.4" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Page Update="Controls\UnbrokenKMonitor.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+
 </Project>

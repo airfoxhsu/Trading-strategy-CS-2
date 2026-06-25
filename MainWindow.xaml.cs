@@ -2403,7 +2403,7 @@ namespace ExtremeSignalAppCS
                 }
             }
 
-            AppendLog(finalContent, clear: true);
+            AppendLog(finalContent, clear: true, forceScrollToEnd: true);
 
             if (allOfflineKlineData.Count > 0)
             {
