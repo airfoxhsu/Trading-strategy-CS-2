@@ -2251,10 +2251,12 @@ namespace ExtremeSignalAppCS
         }
 
         private bool _isHandlingPropertyChange = false;
+        private bool _isAutoCancelling = false;
 
         /// <summary>
         /// 處理觀測表項目屬性變更，特別是當使用者勾選或取消勾選 (IsChecked) 時進行委託下單與撤單。
         /// </summary>
+#pragma warning disable CA1416
         private void ObsItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName != nameof(SimulationResult.IsChecked)) return;
@@ -2272,6 +2274,7 @@ namespace ExtremeSignalAppCS
                     // 1. 檢查 API 登入狀態
                     if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
                     {
+                        System.Media.SystemSounds.Hand.Play(); // 播放失敗警告音
                         MessageBox.Show("元大交易 API 未登入，請先完成登入與帳務連線！", "下單失敗", MessageBoxButton.OK, MessageBoxImage.Warning);
                         item.IsChecked = false; // 自動取消勾選
                         return;
@@ -2288,6 +2291,7 @@ namespace ExtremeSignalAppCS
                     item.OrderNo = null;
 
                     AppendLog($"【交易】啟動價格監控，當價格來到 A 點價 {item.BestAPrice} 時將自動觸發預掛限價單。商品: {symbol}");
+                    System.Media.SystemSounds.Asterisk.Play(); // 播放啟動監控音效
                 }
                 else
                 {
@@ -2324,6 +2328,16 @@ namespace ExtremeSignalAppCS
                             item.OrderedSymbol = null;
                         }
                     }
+
+                    // 根據是否為自動取消播放不同音效
+                    if (_isAutoCancelling)
+                    {
+                        System.Media.SystemSounds.Hand.Play();
+                    }
+                    else
+                    {
+                        System.Media.SystemSounds.Beep.Play();
+                    }
                 }
             }
             catch (Exception ex)
@@ -2335,6 +2349,7 @@ namespace ExtremeSignalAppCS
                 _isHandlingPropertyChange = false;
             }
         }
+#pragma warning restore CA1416
 
         /// <summary>
         /// 觸價監控核心：當最新成交價碰觸或穿過極值 A 點價時，觸發送出限價委託單。
@@ -2374,7 +2389,15 @@ namespace ExtremeSignalAppCS
                         if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
                         {
                             AppendLog("【交易】觸發下單失敗：元大交易 API 未登入。");
-                            item.IsChecked = false; // 失敗時取消勾選
+                            _isAutoCancelling = true;
+                            try
+                            {
+                                item.IsChecked = false; // 失敗時取消勾選
+                            }
+                            finally
+                            {
+                                _isAutoCancelling = false;
+                            }
                             continue;
                         }
 
@@ -5636,7 +5659,16 @@ namespace ExtremeSignalAppCS
                             // 先清空 OrderNo 與 OrderedSymbol，防止 PropertyChanged 事件重覆觸發 API 撤單
                             targetItem.OrderNo = null;
                             targetItem.OrderedSymbol = null;
-                            targetItem.IsChecked = false;
+                            
+                            _isAutoCancelling = true;
+                            try
+                            {
+                                targetItem.IsChecked = false;
+                            }
+                            finally
+                            {
+                                _isAutoCancelling = false;
+                            }
                         }
                     }
                 }
