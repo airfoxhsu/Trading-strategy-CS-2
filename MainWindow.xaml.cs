@@ -2184,13 +2184,7 @@ namespace ExtremeSignalAppCS
                     _isRestoringSelection = false;
                 }
             }
-            else if (_obsCollection.Count > 0 && _obsCollection.Count > oldCount)
-            {
-                if (dgObserver.SelectedIndex == -1 && string.IsNullOrEmpty(_targetHighlightStopLossPrice))
-                {
-                    dgObserver.ScrollIntoView(_obsCollection[^1]);
-                }
-            }
+            // 註：原先在此處判斷新增列時的滾動邏輯已移除，現由 ObsCollection_CollectionChanged 統一非同步處理強制滾動 (且反白不取消)。
 
             ApplyObserverHighlightsToKline();
 
@@ -2328,7 +2322,7 @@ namespace ExtremeSignalAppCS
         }
 
         /// <summary>
-        /// 監聽極值觀測集合的元素異動，動態訂閱項目屬性變更。
+        /// 監聽極值觀測集合的元素異動，動態訂閱項目屬性變更，並在有新觀測列加入時自動滾動至最底部。
         /// </summary>
         private void ObsCollection_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
         {
@@ -2338,6 +2332,15 @@ namespace ExtremeSignalAppCS
                 {
                     item.PropertyChanged += ObsItem_PropertyChanged;
                 }
+
+                // 當有新增極值觀測列時，非同步強制滾動至最底部，確保 UI 排版完成後執行且保留現有反白狀態
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+                {
+                    if (dgObserver.Items.Count > 0)
+                    {
+                        dgObserver.ScrollIntoView(dgObserver.Items[^1]);
+                    }
+                }));
             }
             if (e.OldItems != null)
             {

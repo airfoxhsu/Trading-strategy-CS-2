@@ -834,7 +834,7 @@ namespace ExtremeSignalAppCS.Controls
             {
                 Foreground = Brushes.Black,
                 FontFamily = new FontFamily("Consolas, Microsoft JhengHei"),
-                FontSize = 12,
+                FontSize = 16,
                 FontWeight = FontWeights.Bold,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 4, 0)
@@ -844,7 +844,7 @@ namespace ExtremeSignalAppCS.Controls
             {
                 Foreground = Brushes.Black,
                 FontFamily = new FontFamily("Consolas, Microsoft JhengHei"),
-                FontSize = 12,
+                FontSize = 16,
                 FontWeight = FontWeights.Bold,
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -1052,11 +1052,15 @@ namespace ExtremeSignalAppCS.Controls
             _isYAutoRanged = true;
             if (_candles == null || _candles.Count == 0) return;
 
-            // X軸對焦：數學上的完美貼齊邊界。由於 K 棒的繪製寬度佔位是 0.6，
-            // 設定左側從 -0.3 開始，能讓第 0 根 K 棒的左邊緣精準切在畫面 x=0。
-            // 右側到 _candles.Count - 0.7 結束，能讓最後一根的右邊緣精準切在畫面最右側。
-            _minX = -0.3;
-            _maxX = _candles.Count - 0.7;
+            // X軸對焦：在原本貼齊的基礎上，左右各加入 5% 的視覺留白緩衝空間
+            double baseMinX = -0.3;
+            double baseMaxX = _candles.Count - 0.7;
+            double rangeX = baseMaxX - baseMinX;
+            if (rangeX <= 0) rangeX = 1.0;
+
+            double marginX = rangeX * 0.05;
+            _minX = baseMinX - marginX;
+            _maxX = baseMaxX + marginX;
 
             // Y軸對焦：自動尋找此區間內的價格最高與最低
             int startIdx = (int)Math.Max(0, _minX);
@@ -1086,9 +1090,10 @@ namespace ExtremeSignalAppCS.Controls
             double height = highest - lowest;
             if (height <= 0) height = 1.0;
 
-            // 上下剛好貼齊最高與最低價，完全包覆不留多餘空白
-            _minY = lowest;
-            _maxY = highest;
+            // 加上 5% 上下緩衝間距以確保視覺美觀與防止 Clipping
+            double margin = height * 0.05;
+            _minY = lowest - margin;
+            _maxY = highest + margin;
 
             _painter.SetData(_candles, _minX, _maxX, _minY, _maxY);
             UpdatePriceTag();
@@ -1175,9 +1180,10 @@ namespace ExtremeSignalAppCS.Controls
             double height = highest - lowest;
             if (height <= 0) height = 1.0;
 
-            // Y軸對焦：完全包覆，上下剛好貼齊最高與最低價，不留多餘空白
-            _minY = lowest;
-            _maxY = highest;
+            // 加上 5% 上下緩衝間距以確保視覺美觀與防止 Clipping
+            double margin = height * 0.05;
+            _minY = lowest - margin;
+            _maxY = highest + margin;
         }
 
         // 預建 Frozen 畫刷快取，供 ShowKlineInfo 高頻呼叫使用，消滅每次 new SolidColorBrush 的 GC 壓力
@@ -1692,10 +1698,8 @@ namespace ExtremeSignalAppCS.Controls
             {
                 _painter.PositionCostPrice = null;
                 _positionTagBorder.Visibility = Visibility.Collapsed;
-                // 重置 X 到最右側
-                double chartW = ActualWidth;
-                double panelW = _positionTagBorder.ActualWidth > 0 ? _positionTagBorder.ActualWidth : 80;
-                _positionTagTransform.X = Math.Max(0, chartW - panelW - KLinePainter.RightMargin - 10);
+                // 重置 X 到預設中間偏右無 K 線的位置
+                ResetPositionTagDefaultX();
                 return;
             }
 
@@ -1728,16 +1732,48 @@ namespace ExtremeSignalAppCS.Controls
                 _positionPnlText.Foreground = Brushes.White;
             }
 
+            bool isFirstShow = _positionTagBorder.Visibility != Visibility.Visible;
             _positionTagBorder.Visibility = Visibility.Visible;
 
             // 確保有重新計算佈局，才能取得正確的 ActualWidth
-            if (_positionTagBorder.ActualWidth == 0)
+            if (_positionTagBorder.ActualWidth == 0 || isFirstShow)
             {
                 _positionTagBorder.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
             }
 
+            if (isFirstShow)
+            {
+                ResetPositionTagDefaultX();
+            }
+
             // 同步更新 Y 軸座標
             SyncPositionTagY();
+        }
+
+        private void ResetPositionTagDefaultX()
+        {
+            double chartW = ActualWidth;
+            if (chartW <= 0) return;
+            
+            double panelW = _positionTagBorder.ActualWidth > 0 ? _positionTagBorder.ActualWidth : 80;
+            double drawWidth = Math.Max(1.0, chartW - KLinePainter.RightMargin);
+            
+            // 預設設在中間偏右方，即 70% 處
+            double defaultX = drawWidth * 0.7;
+            
+            if (_candles != null && _candles.Count > 0)
+            {
+                double lastKbarX = _painter.GetCanvasX(_candles.Count - 1, chartW);
+                if (lastKbarX < drawWidth)
+                {
+                    // 優先放在最新 K 線右邊 20 像素的留白處，如果沒有留白或已靠右則最多不小於 70% 處
+                    defaultX = Math.Max(drawWidth * 0.7, lastKbarX + 20);
+                }
+            }
+            
+            // 確保 X 座標不會跑出可視範圍 (最右側保留 10 像素邊界)
+            double maxX = drawWidth - panelW - 10;
+            _positionTagTransform.X = Math.Max(0, Math.Min(defaultX, maxX));
         }
 
         private void SyncPositionTagY()
