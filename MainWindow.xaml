@@ -10,7 +10,8 @@
         Title="台指極值訊號自動對比 - WPF 現代高性能 DirectX 32位元版" 
         Height="800" Width="1300"
         SizeChanged="Window_SizeChanged"
-        Background="{StaticResource ExtremeDarkBg}">
+        Background="{StaticResource ExtremeDarkBg}"
+        FontSize="{DynamicResource GlobalFontSize}">
     
     <Grid Margin="10">
         <Grid.RowDefinitions>
@@ -42,8 +43,8 @@
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <Label x:Name="lblRealtimeStatus" Content="未連線" Foreground="#EB4B4B" FontWeight="Bold" FontSize="13"/>
-                    <Label x:Name="lblStatus" Content="  請選擇 event.log 檔案開始分析" Foreground="#0080FF" FontWeight="Bold" FontSize="13"/>
+                    <Label x:Name="lblRealtimeStatus" Content="未連線" Foreground="#EB4B4B" FontWeight="Bold" FontSize="{DynamicResource GlobalFontSize}"/>
+                    <Label x:Name="lblStatus" Content="  請選擇 event.log 檔案開始分析" Foreground="#0080FF" FontWeight="Bold" FontSize="{DynamicResource GlobalFontSize}"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -53,10 +54,10 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="80"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
@@ -68,21 +69,21 @@
                 </Grid.ColumnDefinitions>
 
                 <Label Grid.Column="0" Content="復盤日期:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox Grid.Column="1" x:Name="txtReplayPath" IsReadOnly="True" VerticalAlignment="Center" Foreground="#00A2ED" FontWeight="Bold" Text="" Margin="0,0,6,0"/>
+                <TextBox Grid.Column="1" x:Name="txtReplayPath" MinWidth="80" IsReadOnly="True" VerticalAlignment="Center" Foreground="#00A2ED" FontWeight="Bold" Text="" Margin="0,0,6,0"/>
                 <Button Grid.Column="2" x:Name="btnSelectReplayDir" Content="選擇資料夾" Click="BtnSelectReplayDir_Click" Margin="0,0,12,0"/>
 
                 <Label Grid.Column="3" Content="盤別:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox Grid.Column="4" x:Name="cboReplaySession" SelectedIndex="0" VerticalAlignment="Center" Margin="0,0,8,0">
+                <ComboBox Grid.Column="4" x:Name="cboReplaySession" MinWidth="80" SelectedIndex="0" VerticalAlignment="Center" Margin="0,0,8,0">
                     <ComboBoxItem Content="日盤"/>
                     <ComboBoxItem Content="夜盤"/>
                 </ComboBox>
 
                 <Button Grid.Column="5" x:Name="btnLoadReplay" Content="載入復盤" Click="BtnLoadReplay_Click" Foreground="#00A2ED" FontWeight="Bold" Margin="0,0,8,0"/>
-                <Button Grid.Column="6" x:Name="btnPlayPause" Content="▶ 播放" Click="BtnPlayPause_Click" IsEnabled="False" Width="70" Background="#005A9E" FontWeight="Bold" Margin="0,0,6,0"/>
-                <Button Grid.Column="7" x:Name="btnStopReplay" Content="⏹ 停止" Click="BtnStopReplay_Click" IsEnabled="False" Width="70" Background="#EB4B4B" FontWeight="Bold" Margin="0,0,12,0"/>
+                <Button Grid.Column="6" x:Name="btnPlayPause" Content="▶ 播放" Click="BtnPlayPause_Click" IsEnabled="False" Background="#005A9E" FontWeight="Bold" Padding="10,4" Margin="0,0,6,0"/>
+                <Button Grid.Column="7" x:Name="btnStopReplay" Content="⏹ 停止" Click="BtnStopReplay_Click" IsEnabled="False" Background="#EB4B4B" FontWeight="Bold" Padding="10,4" Margin="0,0,12,0"/>
 
                 <Label Grid.Column="8" Content="速度:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <ComboBox Grid.Column="9" x:Name="cboReplaySpeed" Width="60" SelectedIndex="0" SelectionChanged="CboReplaySpeed_SelectionChanged" VerticalAlignment="Center" Margin="0,0,8,0">
+                <ComboBox Grid.Column="9" x:Name="cboReplaySpeed" MinWidth="60" SelectedIndex="0" SelectionChanged="CboReplaySpeed_SelectionChanged" VerticalAlignment="Center" Margin="0,0,8,0">
                     <ComboBoxItem Content="1x"/>
                     <ComboBoxItem Content="2x"/>
                     <ComboBoxItem Content="5x"/>
@@ -92,17 +93,21 @@
                     <ComboBoxItem Content="自訂"/>
                 </ComboBox>
 
-                <Label Grid.Column="10" Content="速度上限:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <!-- 使用 TextBox 搭配滾輪/修改，免除外部 NumericUpDown 依賴 -->
-                <TextBox Grid.Column="10" x:Name="txtMaxSpeed" Text="100" Width="45" TextAlignment="Center" VerticalAlignment="Center" Margin="62,0,0,0" LostFocus="TxtMaxSpeed_LostFocus"/>
-                <Label Grid.Column="10" Content="x" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="110,0,0,0"/>
+                <StackPanel Grid.Column="10" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Label Content="速度上限:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <!-- 使用 TextBox 搭配滾輪/修改，免除外部 NumericUpDown 依賴 -->
+                    <TextBox x:Name="txtMaxSpeed" Text="100" MinWidth="45" TextAlignment="Center" VerticalAlignment="Center" LostFocus="TxtMaxSpeed_LostFocus"/>
+                    <Label Content="x" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                </StackPanel>
 
                 <!-- Slider 科幻進度條 -->
-                <Label Grid.Column="11" Content="進度:" Foreground="White" VerticalAlignment="Center" Margin="10,0,4,0"/>
-                <Slider Grid.Column="11" x:Name="sldProgress" IsEnabled="False" VerticalAlignment="Center" Margin="45,0,8,0"
-                        PreviewMouseDown="SldProgress_PreviewMouseDown"
-                        PreviewMouseUp="SldProgress_PreviewMouseUp"
-                        ValueChanged="SldProgress_ValueChanged"/>
+                <DockPanel Grid.Column="11" LastChildFill="True" VerticalAlignment="Center" Margin="10,0,8,0">
+                    <Label Content="進度:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <Slider x:Name="sldProgress" IsEnabled="False" VerticalAlignment="Center"
+                            PreviewMouseDown="SldProgress_PreviewMouseDown"
+                            PreviewMouseUp="SldProgress_PreviewMouseUp"
+                            ValueChanged="SldProgress_ValueChanged"/>
+                </DockPanel>
 
                 <Label Grid.Column="12" x:Name="lblVirtualTime" Content="復盤時間: --:--:--" Foreground="#00A2ED" FontFamily="Consolas" FontWeight="Bold" VerticalAlignment="Center"/>
             </Grid>
@@ -149,7 +154,7 @@
                     <!-- 右側參數設定下拉選單 -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <Label Content="載入回測(天):" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                        <ComboBox x:Name="cboBacktestDays" Width="55" SelectedIndex="1" SelectionChanged="CboBacktestDays_SelectionChanged" Margin="0,0,12,0">
+                        <ComboBox x:Name="cboBacktestDays" MinWidth="55" SelectedIndex="1" SelectionChanged="CboBacktestDays_SelectionChanged" Margin="0,0,12,0">
                             <ComboBoxItem Content="30"/>
                             <ComboBoxItem Content="60"/>
                             <ComboBoxItem Content="120"/>
@@ -158,7 +163,7 @@
                         </ComboBox>
 
                         <Label Content="小臺K線(分):" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                        <ComboBox x:Name="cboKlineInterval" Width="45" SelectedIndex="0" SelectionChanged="CboKlineInterval_SelectionChanged">
+                        <ComboBox x:Name="cboKlineInterval" MinWidth="45" SelectedIndex="0" SelectionChanged="CboKlineInterval_SelectionChanged">
                             <ComboBoxItem Content="1"/>
                             <ComboBoxItem Content="2"/>
                             <ComboBoxItem Content="3"/>
@@ -194,7 +199,7 @@
 
                 <Border Grid.Column="0" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1" CornerRadius="4" Margin="0,0,4,0">
                     <RichTextBox x:Name="txtOutput" IsReadOnly="True" Background="#1A1A1A" Foreground="#DCDCDC" 
-                                 FontFamily="Consolas" FontSize="13" BorderThickness="0"
+                                 FontFamily="Consolas" FontSize="{DynamicResource GlobalFontSize}" BorderThickness="0"
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                                  PreviewMouseLeftButtonDown="TxtOutput_PreviewMouseLeftButtonDown"/>
                 </Border>
@@ -203,46 +208,62 @@
 
                 <Border Grid.Column="1" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1" CornerRadius="4" Margin="4,0,0,0">
                     <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <!-- 今日已平倉損益面板 -->
-                        <Border Grid.Row="0" Background="#222222" Padding="6,4" Margin="4,2,4,4" CornerRadius="3" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- 左側：帳號資訊與統計 -->
+                        <Grid Grid.Column="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <!-- 今日已平倉損益面板 -->
+                            <Border Grid.Row="0" Background="#222222" Padding="6,4" Margin="4,2,4,4" CornerRadius="3" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1">
                                 <StackPanel Orientation="Vertical">
-                                    <TextBlock x:Name="lblPnLAccount" Text="帳號: 未登入" Foreground="Gray" FontSize="11"/>
+                                    <Button x:Name="btnQueryPnL" Content="查詢" HorizontalAlignment="Left" Click="BtnQueryPnL_Click" Background="#333" Foreground="White" Padding="10,4" Margin="0,0,0,6"/>
+                                    <TextBlock x:Name="lblPnLAccount" Text="帳號: 未登入" Foreground="Gray" FontSize="{DynamicResource GlobalFontSize}"/>
                                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                         <TextBlock Text="今日已平倉損益: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="lblTodayPnL" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblTodayPnL" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="{DynamicResource GlobalFontSize}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                         <TextBlock Text="可動用保證金: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="lblMargin" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblMargin" Text="NT$ 0" Foreground="#DCDCDC" FontWeight="Bold" FontSize="{DynamicResource GlobalFontSize}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                         <TextBlock Text="當前庫存: " Foreground="#DCDCDC" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="lblCurrentPosition" Text="無部位" Foreground="#DCDCDC" FontWeight="Bold" FontSize="14" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="lblCurrentPosition" Text="無部位" Foreground="#DCDCDC" FontWeight="Bold" FontSize="{DynamicResource GlobalFontSize}" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </StackPanel>
-                                <Button Grid.Column="1" x:Name="btnQueryPnL" Content="查詢" Width="50" Height="26" VerticalAlignment="Center" Click="BtnQueryPnL_Click" Background="#333" Foreground="White"/>
+                            </Border>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="icIntervalStats" Padding="4">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Transparent" Cursor="Hand" MouseLeftButtonDown="IntervalStat_MouseLeftButtonDown">
+                                                <TextBlock Text="{Binding DisplayText}" Foreground="{Binding DisplayColor}" Margin="0,2"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- 右側：帳務查詢日誌 -->
+                        <Border Grid.Column="1" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="1,0,0,0" Margin="4,0,0,0" Padding="4,0,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="帳務查詢日誌" Foreground="#0080FF" FontWeight="Bold" Margin="4,2,4,4" FontSize="{DynamicResource GlobalFontSize}"/>
+                                <RichTextBox Grid.Row="1" x:Name="txtQueryOutput" IsReadOnly="True" Background="#1A1A1A" Foreground="#DCDCDC" 
+                                             FontFamily="Consolas" FontSize="{DynamicResource GlobalFontSize}" BorderThickness="0"
+                                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
                             </Grid>
                         </Border>
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                            <ItemsControl x:Name="icIntervalStats" Padding="4">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Background="Transparent" Cursor="Hand" MouseLeftButtonDown="IntervalStat_MouseLeftButtonDown">
-                                            <TextBlock Text="{Binding DisplayText}" Foreground="{Binding DisplayColor}" Margin="0,2"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
                     </Grid>
                 </Border>
             </Grid>
@@ -354,6 +375,26 @@
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="選取" Width="Auto" MinWidth="45">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}" 
+                                                  IsEnabled="{Binding IsCheckable}" 
+                                                  HorizontalAlignment="Center" 
+                                                  VerticalAlignment="Center">
+                                            <CheckBox.Style>
+                                                <Style TargetType="CheckBox">
+                                                    <Style.Triggers>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                            <Setter Property="Opacity" Value="0.25"/>
+                                                        </Trigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </CheckBox.Style>
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="類型" Binding="{Binding DisplayTitle}" Width="*" MinWidth="100"/>
                             <DataGridTextColumn Header="A點時間" Binding="{Binding BestATimeDisplay}" Width="Auto" MinWidth="75"/>
                             <DataGridTextColumn Header="A點價" Binding="{Binding BestAPrice}" Width="Auto" MinWidth="55">
@@ -395,22 +436,32 @@
         <!-- ==================== 4. 底部觀察參數列 ==================== -->
         <Border Grid.Row="4" BorderBrush="{StaticResource WidgetBorderBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0" Margin="0,4,0,0">
             <Grid>
-                <StackPanel x:Name="spBottomBar" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel x:Name="spBottomBar" Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                     <Label x:Name="lblObsN" Content="觀察N: --" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
 
                     <Label Content="最高觀察:" Foreground="White" VerticalAlignment="Center" Margin="12,0,4,0"/>
-                    <ComboBox x:Name="cboObsHigh" Width="70" IsEditable="True" TextBoxBase.TextChanged="CboObsHigh_TextChanged" Margin="0,0,6,0"/>
+                    <ComboBox x:Name="cboObsHigh" MinWidth="70" IsEditable="True" TextBoxBase.TextChanged="CboObsHigh_TextChanged" Margin="0,0,6,0"/>
 
                     <Label Content="做空觀察:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
-                    <TextBox x:Name="txtObsHigh" Width="60" VerticalAlignment="Center" KeyDown="TxtObsHigh_KeyDown" Margin="0,0,12,0"/>
+                    <TextBox x:Name="txtObsHigh" MinWidth="60" VerticalAlignment="Center" KeyDown="TxtObsHigh_KeyDown" Margin="0,0,12,0"/>
 
                     <Label Content="最低觀察:" Foreground="White" VerticalAlignment="Center" Margin="12,0,4,0"/>
-                    <ComboBox x:Name="cboObsLow" Width="70" IsEditable="True" TextBoxBase.TextChanged="CboObsLow_TextChanged" Margin="0,0,6,0"/>
+                    <ComboBox x:Name="cboObsLow" MinWidth="70" IsEditable="True" TextBoxBase.TextChanged="CboObsLow_TextChanged" Margin="0,0,6,0"/>
 
                     <Label Content="做多觀察:" Foreground="White" VerticalAlignment="Center" Margin="8,0,4,0"/>
-                    <TextBox x:Name="txtObsLow" Width="60" VerticalAlignment="Center" KeyDown="TxtObsLow_KeyDown" Margin="0,0,12,0"/>
+                    <TextBox x:Name="txtObsLow" MinWidth="60" VerticalAlignment="Center" KeyDown="TxtObsLow_KeyDown" Margin="0,0,12,0"/>
 
                     <TextBlock x:Name="lblObsStatus" Text="觀察: 待設定" Foreground="Gray" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,30,0">
+                    <Label Content="下單品種:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <RadioButton x:Name="rbTX" Content="大臺" Foreground="White" GroupName="SymbolGroup" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <RadioButton x:Name="rbMTX" Content="小臺" Foreground="White" GroupName="SymbolGroup" IsChecked="True" VerticalAlignment="Center"/>
                 </StackPanel>
             </Grid>
         </Border>

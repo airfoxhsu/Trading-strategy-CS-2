@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -59,7 +60,6 @@ namespace ExtremeSignalAppCS
         // 新增：即時部位與狀態
         private volatile int _currentPositionLots = 0;
         private double _currentPositionCost = 0;
-        private string _lastTestedFAWorkID = "FA004"; // 測試用，後續可改為正確代碼
 
         // 雙軌行情資料快取 (大臺/小臺, 日盤/夜盤)
         private readonly Dictionary<string, Dictionary<string, ConcurrentAppendOnlyList<TradeTick>>> _liveSymbolTrades;
@@ -226,6 +226,7 @@ namespace ExtremeSignalAppCS
             // 2. 繫結 WPF DataGrid 容器
             dgKline.ItemsSource = _klineCollection;
             dgObserver.ItemsSource = _obsCollection;
+            _obsCollection.CollectionChanged += ObsCollection_CollectionChanged;
             if (icIntervalStats != null) icIntervalStats.ItemsSource = _intervalStatsCollection;
 
             // 3. 註冊視窗載入與關閉事件
@@ -410,65 +411,10 @@ namespace ExtremeSignalAppCS
 
             // 基準寬度為 1300，計算縮放比例
             double scale = Math.Max(0.5, this.ActualWidth / 1300.0);
-            double newFontSize = 13.0 * scale;
-
-            // 1. 主表單日誌裡的內容
-            txtOutput.FontSize = newFontSize;
-
-            // 2. 未破分 K 棒停損監控表單裡的內容
-            wndUnbrokenK.txtDisplay.FontSize = newFontSize;
-
-            // 3. 趨勢方向表單的內容
-            wndUnbrokenK.txtTrendHistory.FontSize = newFontSize;
-
-            // 4. K 線表格的內容
-            dgKline.FontSize = newFontSize;
-
-            // 5. 極值觀測表的內容
-            dgObserver.FontSize = newFontSize;
-
-            // 6. 大臺內外盤，以及小臺內外盤，再加上最高價與最低價的 label的內容
-            lblSpeedTxf.FontSize = newFontSize;
-            lblSpeedMxf.FontSize = newFontSize;
-            tbPriceInfo.FontSize = newFontSize;
-
-            // 7. 補充：共識與速差與成交價
-            lblConsensusDir.FontSize = newFontSize;
-            lblTxfNetSpeed.FontSize = newFontSize;
-            lblMxfNetSpeed.FontSize = newFontSize;
-            lblLivePrice.FontSize = newFontSize;
-
-            // 8. 補充：未破分 K 監控的標題條
-            wndUnbrokenK.lblTitle.FontSize = newFontSize;
-            wndUnbrokenK.lblTotalStats.FontSize = newFontSize;
-            wndUnbrokenK.lblUnbrokenStats.FontSize = newFontSize;
-
-            // 9. 補充：最底部觀察參數列
-            foreach (System.Windows.UIElement child in spBottomBar.Children)
-            {
-                if (child is System.Windows.Controls.Control c)
-                {
-                    c.FontSize = newFontSize;
-                    
-                    if (c is System.Windows.Controls.ComboBox cbo)
-                    {
-                        if (cbo.Name == "cboObsN") cbo.Width = 55.0 * scale;
-                        else if (cbo.Name == "cboObsHigh" || cbo.Name == "cboObsLow") cbo.Width = 70.0 * scale;
-                    }
-                    else if (c is System.Windows.Controls.TextBox txt)
-                    {
-                        if (txt.Name == "txtObsHigh" || txt.Name == "txtObsLow") txt.Width = 60.0 * scale;
-                    }
-                }
-                else if (child is System.Windows.Controls.TextBlock tb)
-                {
-                    tb.FontSize = newFontSize;
-                }
-            }
-
-            // 10. 右下方 1/3 統計區塊字體縮放
-
-            if (icIntervalStats != null) icIntervalStats.FontSize = newFontSize;
+            
+            // 更新全域動態字型大小資源
+            double baseFontSize = 12.0;
+            Application.Current.Resources["GlobalFontSize"] = baseFontSize * scale;
         }
 
         // ==================== 0. 設定載入 ====================
@@ -755,7 +701,6 @@ namespace ExtremeSignalAppCS
                     _yuantaOrd.OnLogonS -= OnOrdLogonS;
                     _yuantaOrd.OnUserDefinsFuncResult -= OnOrdUserDefinsFuncResult;
                     _yuantaOrd.OnOrdMatF -= OnOrdMatF;
-                    _yuantaOrd.OnRfOrdMatRF -= OnRfOrdMatRF;
                     AppendLog("【帳務】DoLogout 呼叫完成，註銷事件。");
                 }
             }
@@ -2158,6 +2103,7 @@ namespace ExtremeSignalAppCS
 
         private void UpdateObserverViews(List<SimulationResult> simulationResults)
         {
+            int oldCount = _obsCollection.Count;
             RefreshObserverComboboxes();
 
             SimulationResult? prevSelected = dgObserver.SelectedItem as SimulationResult;
@@ -2192,6 +2138,8 @@ namespace ExtremeSignalAppCS
                 t.UpdateTags(s.Tags);
             });
 
+            RecalculateObserverCheckableStates();
+
             if (prevSelectedPrice != null && string.IsNullOrEmpty(_targetHighlightStopLossPrice))
             {
                 var match = _obsCollection.FirstOrDefault(o => o.BestATime == prevSelectedTime && o.StopLossPrice.ToString() == prevSelectedPrice);
@@ -2211,7 +2159,7 @@ namespace ExtremeSignalAppCS
                     _isRestoringSelection = false;
                 }
             }
-            else if (_obsCollection.Count > 0)
+            else if (_obsCollection.Count > 0 && _obsCollection.Count > oldCount)
             {
                 if (dgObserver.SelectedIndex == -1 && string.IsNullOrEmpty(_targetHighlightStopLossPrice))
                 {
@@ -2225,6 +2173,150 @@ namespace ExtremeSignalAppCS
             RefreshObserverComboboxes();
 
             ApplyTargetHighlight();
+        }
+
+        /// <summary>
+        /// 重新計算極值觀測表中所有列的核取方塊可用狀態 (IsCheckable)。
+        /// 規則：
+        /// 1. 該列已破 (IsBroken == true) => IsCheckable = false。
+        /// 2. 該列未破：
+        ///    - 若類型是 "做空" (抓新高反轉)，往後 (往下) 搜尋若有任何 "做多" 且未破的資料，則 IsCheckable = false。
+        ///    - 若類型是 "做多" (抓新低反轉)，往後 (往下) 搜尋若有任何 "做空" 且未破的資料，則 IsCheckable = false。
+        ///    - 否則 IsCheckable = true。
+        /// 3. 若類型既非 "做多" 也非 "做空"，則 IsCheckable = false。
+        /// </summary>
+        private void RecalculateObserverCheckableStates()
+        {
+            int count = _obsCollection.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var current = _obsCollection[i];
+                if (current.IsBroken)
+                {
+                    current.IsCheckable = false;
+                    continue;
+                }
+
+                if (current.Type != "做多" && current.Type != "做空")
+                {
+                    current.IsCheckable = false;
+                    continue;
+                }
+
+                bool hasActiveOpposite = false;
+                string oppositeType = current.Type == "做多" ? "做空" : "做多";
+                for (int j = i + 1; j < count; j++)
+                {
+                    var next = _obsCollection[j];
+                    if (next.Type == oppositeType && !next.IsBroken)
+                    {
+                        hasActiveOpposite = true;
+                        break;
+                    }
+                }
+                current.IsCheckable = !hasActiveOpposite;
+            }
+        }
+
+        /// <summary>
+        /// 監聽極值觀測集合的元素異動，動態訂閱項目屬性變更。
+        /// </summary>
+        private void ObsCollection_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            if (e.NewItems != null)
+            {
+                foreach (SimulationResult item in e.NewItems)
+                {
+                    item.PropertyChanged += ObsItem_PropertyChanged;
+                }
+            }
+            if (e.OldItems != null)
+            {
+                foreach (SimulationResult item in e.OldItems)
+                {
+                    item.PropertyChanged -= ObsItem_PropertyChanged;
+                }
+            }
+        }
+
+        private bool _isHandlingPropertyChange = false;
+
+        /// <summary>
+        /// 處理觀測表項目屬性變更，特別是當使用者勾選或取消勾選 (IsChecked) 時進行委託下單與撤單。
+        /// </summary>
+        private void ObsItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName != nameof(SimulationResult.IsChecked)) return;
+            if (sender is not SimulationResult item) return;
+
+            // 防重入保護
+            if (_isHandlingPropertyChange) return;
+            _isHandlingPropertyChange = true;
+
+            try
+            {
+                if (item.IsChecked)
+                {
+                    // === 送出下單委託 ===
+                    // 1. 檢查 API 登入狀態
+                    if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                    {
+                        MessageBox.Show("元大交易 API 未登入，請先完成登入與帳務連線！", "下單失敗", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        item.IsChecked = false; // 自動取消勾選
+                        return;
+                    }
+
+                    // 2. 判斷品種
+                    string baseSym = rbTX.IsChecked == true ? "TXF" : "MXF";
+                    string monthCode = _engine.GetMonthCode();
+                    string symbol = baseSym + monthCode;
+
+                    // 3. 判斷買賣方向
+                    string buys = item.Type == "做多" ? "B" : "S";
+                    string price = item.BestAPrice.ToString();
+                    string qty = "1";
+
+                    AppendLog($"【交易】送出預掛下單委託：{symbol} {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price}");
+
+                    // 4. 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
+                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, symbol, price, qty, "0", "L", "R", "", "");
+                    AppendLog($"【交易】元大 API 下單回傳結果: {ret}");
+
+                    // 記錄下單時的合約代碼
+                    item.OrderedSymbol = symbol;
+                }
+                else
+                {
+                    // === 送出撤單委託 ===
+                    if (!string.Empty.Equals(item.OrderNo) && !string.IsNullOrEmpty(item.OrderNo) && !string.IsNullOrEmpty(item.OrderedSymbol))
+                    {
+                        if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                        {
+                            AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
+                            return;
+                        }
+
+                        string buys = item.Type == "做多" ? "B" : "S";
+                        AppendLog($"【交易】送出撤單委託：{item.OrderedSymbol} 委託書號: {item.OrderNo}");
+
+                        // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
+                        string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", item.OrderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
+                        AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
+
+                        // 撤單後清除相關屬性
+                        item.OrderNo = null;
+                        item.OrderedSymbol = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"【交易】處理委託事件發生異常: {ex.Message}");
+            }
+            finally
+            {
+                _isHandlingPropertyChange = false;
+            }
         }
 
         private void ApplyObserverHighlightsToKline()
@@ -3338,10 +3430,9 @@ namespace ExtremeSignalAppCS
 
         private void BtnSelectReplayDir_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new System.Windows.Forms.FolderBrowserDialog
+            var dialog = new Microsoft.Win32.OpenFolderDialog
             {
-                Description = "選擇 event.log 所在的日期資料夾",
-                ShowNewFolderButton = false
+                Title = "選擇 event.log 所在的日期資料夾"
             };
 
             string defaultPath = !string.IsNullOrEmpty(_lastSelectedReplayDir) && Directory.Exists(_lastSelectedReplayDir) 
@@ -3350,12 +3441,12 @@ namespace ExtremeSignalAppCS
 
             if (Directory.Exists(defaultPath))
             {
-                dialog.SelectedPath = defaultPath;
+                dialog.InitialDirectory = defaultPath;
             }
 
-            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            if (dialog.ShowDialog() == true)
             {
-                string path = dialog.SelectedPath;
+                string path = dialog.FolderName;
                 string logFile = Path.Combine(path, "event.log");
                 
                 if (File.Exists(logFile))
@@ -4696,35 +4787,92 @@ namespace ExtremeSignalAppCS
             catch { }
         }
 
+        /// <summary>
+        /// 執行緒安全地向對應的 RichTextBox 添加著色日誌，並提供分流與記憶體快取。
+        /// 對帳務日誌實施精簡過濾，防止過多 API 通訊細節造成 UI 雜亂。
+        /// </summary>
+        /// <param name="text">要寫入的日誌文字內容。</param>
+        /// <param name="clear">是否在寫入前清空日誌快取與控制項。</param>
+        /// <param name="forceScrollToEnd">是否強制將滾動條拉至最底部。</param>
         private void AppendLog(string text, bool clear = false, bool forceScrollToEnd = false)
         {
-            // 將日誌儲存到全域陣列，確保背景排版引擎重繪時不會遺失
+            // 初始化並獲取全域系統日誌與帳務日誌的資源快取清單
             if (!App.Current.Resources.Contains("_system_logs"))
             {
                 App.Current.Resources["_system_logs"] = new List<string>();
             }
             var systemLogs = (List<string>)App.Current.Resources["_system_logs"];
 
+            if (!App.Current.Resources.Contains("_query_logs"))
+            {
+                App.Current.Resources["_query_logs"] = new List<string>();
+            }
+            var queryLogs = (List<string>)App.Current.Resources["_query_logs"];
+
+            // 若請求清除，則同步清空所有快取清單與對應的 UI 日誌看板
             if (clear)
             {
                 systemLogs.Clear();
+                queryLogs.Clear();
+                LogHighlighter.AppendLog(txtOutput, "", clear: true);
+                LogHighlighter.AppendLog(txtQueryOutput, "", clear: true);
             }
 
             if (!string.IsNullOrEmpty(text))
             {
+                // 判斷日誌內容是否屬於交易、庫存或帳務相關，若是則分流至專屬的查詢日誌區
+                bool isQueryLog = text.Contains("【帳務】") || 
+                                  text.Contains("【帳務資料】") || 
+                                  text.Contains("【帳務錯誤】") || 
+                                  text.Contains("【帳務解析錯誤】") || 
+                                  text.Contains("【庫存更新】") || 
+                                  text.Contains("【下單】") || 
+                                  text.Contains("【委託】") ||
+                                  text.Contains("【成交回報】");
+
                 string timeStr = DateTime.Now.ToString("HH:mm:ss");
                 string logEntry = text.StartsWith("\n") ? $"\n[{timeStr}] {text.TrimStart()}" : $"[{timeStr}] {text}";
-                systemLogs.Add(logEntry);
 
-                // 限制最多保留 50 筆，避免記憶體無限增長
-                if (systemLogs.Count > 50)
+                if (isQueryLog)
                 {
-                    systemLogs.RemoveAt(0);
+                    // 偵測並過濾掉雜亂的 API 傳輸細節與解析過程日誌
+                    bool isMessyLog = text.Contains("UserDefinsFunc") || 
+                                      text.Contains("已送出國內庫存查詢") || 
+                                      text.Contains("自訂功能回報") || 
+                                      text.Contains("開始解析 FA") || 
+                                      text.Contains("單行鍵值對") || 
+                                      text.Contains("匹配到") || 
+                                      text.Contains("【帳務資料】") || 
+                                      text.Contains("未偵測到明確標題");
+
+                    if (isMessyLog)
+                    {
+                        // 雜亂日誌不在 UI 渲染，但於後台輸出以便排錯
+                        System.Diagnostics.Debug.WriteLine($"[帳務細節] {logEntry}");
+                        return;
+                    }
+
+                    // 寫入帳務查詢日誌快取，上限保留 50 筆
+                    queryLogs.Add(logEntry);
+                    if (queryLogs.Count > 50)
+                    {
+                        queryLogs.RemoveAt(0);
+                    }
+                    // 渲染至右側的帳務查詢日誌，強制滾動至最底端
+                    LogHighlighter.AppendLog(txtQueryOutput, logEntry, clear: false, forceScrollToEnd: true);
+                }
+                else
+                {
+                    // 寫入一般監控日誌快取，上限保留 50 筆
+                    systemLogs.Add(logEntry);
+                    if (systemLogs.Count > 50)
+                    {
+                        systemLogs.RemoveAt(0);
+                    }
+                    // 渲染至左側的主監控日誌
+                    LogHighlighter.AppendLog(txtOutput, text, clear: false, forceScrollToEnd);
                 }
             }
-
-            // 呼叫 UI 渲染
-            LogHighlighter.AppendLog(txtOutput, text, clear, forceScrollToEnd);
         }
 
         private static int ParseTimeToMinutes(string timeStr)
@@ -4835,6 +4983,27 @@ namespace ExtremeSignalAppCS
 
         // ==================== 10. 元大下單/帳務 API 整合與今日損益查詢 ====================
 
+        /// <summary>
+        /// 執行緒安全地比對傳入帳號與當前監控帳號。
+        /// 相容元大 API 可能傳回的 7 碼、10 碼（含分公司）或 12 碼（含市場別與分公司）帳號格式。
+        /// </summary>
+        /// <param name="acNo">API 事件回傳的帳號字串。</param>
+        /// <returns>若匹配則傳回 true，否則傳回 false。</returns>
+        private bool IsMatchingAccount(string? acNo)
+        {
+            if (string.IsNullOrEmpty(acNo)) return false;
+            string target = acNo.Trim();
+            if (string.IsNullOrEmpty(_currentAccount)) return false;
+
+            // 長度完全一致時直接比對
+            if (target == _currentAccount) return true;
+
+            // 若傳回之帳號較長，檢查是否以當前帳號結尾（解決 3碼分公司+7碼帳號，或 2+3碼分公司+7碼帳號之相容性）
+            if (target.Length > _currentAccount.Length && target.EndsWith(_currentAccount)) return true;
+
+            return false;
+        }
+
         private void InitYuantaOrd()
         {
             if (_yuantaOrd != null) return;
@@ -4843,7 +5012,8 @@ namespace ExtremeSignalAppCS
             _yuantaOrd.OnLogonS += OnOrdLogonS;
             _yuantaOrd.OnUserDefinsFuncResult += OnOrdUserDefinsFuncResult;
             _yuantaOrd.OnOrdMatF += OnOrdMatF;
-            _yuantaOrd.OnRfOrdMatRF += OnRfOrdMatRF;
+            _yuantaOrd.OnOrdResult += OnOrdResult;
+            _yuantaOrd.OnOrdRptF += OnOrdRptF;
             _pnlCalculator.Reset();
         }
 
@@ -4955,8 +5125,8 @@ namespace ExtremeSignalAppCS
 
             // 送出 FA002 (國內庫存總計)
             string param = $"Func=FA002|bhno={_currentBranch}|acno={_currentAccount}|suba=|kind=F|FC=N";
-            _yuantaOrd.UserDefinsFunc(param, "FA002");
-            AppendLog("【帳務】已送出國內庫存查詢 (FA002)...");
+            int ret = _yuantaOrd.UserDefinsFunc(param, "FA002");
+            AppendLog($"【帳務狀態】已送出國內庫存查詢 (FA002)，回傳代碼: {ret} (0 代表送出成功)");
         }
 
 
@@ -5051,7 +5221,7 @@ namespace ExtremeSignalAppCS
                         if (foundPnLField)
                         {
                             UpdatePnLUI(totalCalculatedPnL);
-                            AppendLog($"【帳務】今日已平倉總損益解析完成，合計為: NT$ {totalCalculatedPnL}");
+                            AppendLog($"【帳務】今日已平倉總損益: NT$ {totalCalculatedPnL}");
                         }
                         else
                         {
@@ -5068,6 +5238,10 @@ namespace ExtremeSignalAppCS
                 {
                     try
                     {
+                        // 輸出不受過濾的原始 Results 回顯，以便精確排查
+                        AppendLog($"【庫存原始資料】RowCount={RowCount}, Results={Results}");
+
+                        // 判斷是否為無部位之空資料
                         if (RowCount == 0 || Results.Contains("TOTAL_OFF_POSITION=0") || Results.Contains("查無資料"))
                         {
                             _currentPositionLots = 0;
@@ -5080,22 +5254,27 @@ namespace ExtremeSignalAppCS
                             string[] fields = Results.Split('|');
                             int colCount = fields.Length / RowCount;
 
-                            int cmdIdx = -1, posIdx = -1, priceIdx = -1;
+                            int cmdIdx = -1;
+                            int posIdx = -1;
+                            int priceIdx = -1;
+                            int bsIdx = -1;
                             
-                            // 1. 找尋標題列索引
+                            // 1. 找尋標題列索引，並支援元大 API 定義的 SYMB (商品) 與 BS (買賣別)
                             for (int j = 0; j < colCount; j++)
                             {
                                 string colName = fields[j].Trim().ToUpper();
-                                if (colName == "COMMODITY" || colName == "COMMODITY_ID") cmdIdx = j;
+                                if (colName == "COMMODITY" || colName == "COMMODITY_ID" || colName == "SYMB") cmdIdx = j;
                                 if (colName == "OFF_POSITION" || colName == "QTY" || colName.Contains("POSITION")) posIdx = j;
                                 if (colName == "PRICE" || colName == "AVG_PRICE" || colName.Contains("COST")) priceIdx = j;
+                                if (colName == "BS" || colName == "BUY_SELL") bsIdx = j;
                             }
 
                             // 2. 解析後續資料列
                             if (cmdIdx != -1 && posIdx != -1 && priceIdx != -1)
                             {
-                                int foundLots = 0;
-                                double foundCost = 0;
+                                int netLots = 0;       // 買賣相抵後的淨口數，多單為正值，空單為負值
+                                double totalCost = 0;   // 所有部位的總加權成本 (價格 * 口數)
+                                int totalLots = 0;     // 絕對值部位加總，用來作為計算加權均價的權重
                                 
                                 for (int i = 1; i < RowCount; i++)
                                 {
@@ -5109,18 +5288,49 @@ namespace ExtremeSignalAppCS
                                         {
                                             if (int.TryParse(fields[rowBase + posIdx], out int pos) && double.TryParse(fields[rowBase + priceIdx], out double price))
                                             {
-                                                foundLots += pos;
-                                                // 若有多筆部位，此處簡單用最後一筆覆蓋（實務上元大 FA002 會彙總）
-                                                if (pos != 0) foundCost = price;
+                                                // 預設買賣別為買進 (多單)
+                                                string bsVal = "B";
+                                                if (bsIdx != -1 && rowBase + bsIdx < fields.Length)
+                                                {
+                                                    bsVal = fields[rowBase + bsIdx].Trim().ToUpper();
+                                                }
+
+                                                // 根據 B (買) 或 S (賣) 來加減淨部位口數與加權總成本
+                                                if (bsVal == "B" || bsVal == "BUY")
+                                                {
+                                                    netLots += pos;
+                                                    totalCost += price * pos;
+                                                    totalLots += pos;
+                                                }
+                                                else if (bsVal == "S" || bsVal == "SELL")
+                                                {
+                                                    netLots -= pos;
+                                                    totalCost += price * pos;
+                                                    totalLots += pos;
+                                                }
                                             }
                                         }
                                     }
                                 }
                                 
-                                _currentPositionLots = foundLots;
-                                _currentPositionCost = foundCost;
-                                lblCurrentPosition.Text = $"{foundLots} 口 (成本: {foundCost})";
-                                AppendLog($"【庫存更新】取得最新部位: {foundLots} 口, 均價: {foundCost}");
+                                // 計算加權均價 (避免除以零)
+                                double weightedAvgPrice = totalLots > 0 ? Math.Round(totalCost / totalLots, 2) : 0;
+
+                                _currentPositionLots = netLots;
+                                _currentPositionCost = weightedAvgPrice;
+
+                                // 更新庫存 UI 面板文字
+                                if (netLots == 0)
+                                {
+                                    lblCurrentPosition.Text = "無部位";
+                                }
+                                else
+                                {
+                                    string posDirection = netLots > 0 ? "多單" : "空單";
+                                    lblCurrentPosition.Text = $"{posDirection} {Math.Abs(netLots)} 口 (成本: {weightedAvgPrice})";
+                                }
+
+                                AppendLog($"【庫存更新】取得最新部位: {lblCurrentPosition.Text}");
                             }
                         }
                     }
@@ -5156,7 +5366,14 @@ namespace ExtremeSignalAppCS
 
         private void OnOrdMatF(string Omkt, string Buys, string Cmbf, string Bhno, string AcNo, string Suba, string Symb, string Scnam, string O_Kind, string S_Buys, string O_Prc, string A_Prc, string O_Qty, string Deal_Qty, string T_Date, string D_Time, string Order_No, string O_Src, string O_Lin, string Oseq_No)
         {
-            if (AcNo.Trim() != _currentAccount) return;
+            // 加入成交回報調試日誌，以便追蹤元大傳回的原始資料與帳號比對結果
+            AppendLog($"【成交回報調試】收到 OnOrdMatF：帳號='{AcNo.Trim()}', 商品='{Symb.Trim()}', 價格='{A_Prc.Trim()}', 口數='{Deal_Qty.Trim()}'");
+
+            if (!IsMatchingAccount(AcNo))
+            {
+                AppendLog($"【成交回報調試】帳號不匹配。收到帳號: '{AcNo.Trim()}'，當前監控帳號: '{_currentAccount}'");
+                return;
+            }
 
             if (double.TryParse(A_Prc, out double price) && int.TryParse(Deal_Qty, out int qty))
             {
@@ -5168,25 +5385,242 @@ namespace ExtremeSignalAppCS
                     AppendLog($"【成交回報】大/小臺平倉損益更新。商品: {Symb.Trim()}, 買賣: {Buys.Trim()}, 價格: {price}, 口數: {qty}。累計今日平倉損益: NT$ {_pnlCalculator.TotalPnL}");
                 }));
 
-                // 成交後立刻自動查最新庫存部位，取代原先的計時器
-                QueryCurrentPositions();
+                // 即時記憶體同步更新當前庫存部位 (僅限符合 TXF/MXF 格式的商品)
+                string symbUpper = Symb.Trim().ToUpper();
+                if (symbUpper.StartsWith("TXF") || symbUpper.StartsWith("MXF"))
+                {
+                    string buysUpper = Buys.Trim().ToUpper();
+                    int oldLots = _currentPositionLots;
+                    double oldCost = _currentPositionCost;
+
+                    int change = (buysUpper == "B" || buysUpper == "BUY") ? qty : -qty;
+                    int newLots = oldLots + change;
+
+                    double newCost = 0;
+                    if (newLots == 0)
+                    {
+                        newCost = 0;
+                    }
+                    else
+                    {
+                        // 判斷是否為同向開倉（包括原本無部位開倉，或多單再加碼，或空單再加碼）
+                        bool isOpening = (oldLots == 0) ||
+                                         (oldLots > 0 && change > 0) ||
+                                         (oldLots < 0 && change < 0);
+
+                        if (isOpening)
+                        {
+                            // 同向開倉：加權平均成本計算
+                            double oldTotalCost = Math.Abs(oldLots) * oldCost;
+                            double newTradeCost = qty * price;
+                            newCost = Math.Round((oldTotalCost + newTradeCost) / Math.Abs(newLots), 2);
+                        }
+                        else
+                        {
+                            // 反向平倉：
+                            int remainingOldLots = Math.Abs(oldLots) - qty;
+                            if (remainingOldLots >= 0)
+                            {
+                                // 未超額平倉：成本維持舊成本
+                                newCost = oldCost;
+                            }
+                            else
+                            {
+                                // 超額平倉且反向開倉：超出部分成本為新成交價
+                                newCost = price;
+                            }
+                        }
+                    }
+
+                    _currentPositionLots = newLots;
+                    _currentPositionCost = newCost;
+
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (newLots == 0)
+                        {
+                            lblCurrentPosition.Text = "無部位";
+                        }
+                        else
+                        {
+                            string posDirection = newLots > 0 ? "多單" : "空單";
+                            lblCurrentPosition.Text = $"{posDirection} {Math.Abs(newLots)} 口 (成本: {newCost})";
+                        }
+                        AppendLog($"【庫存更新】記憶體同步更新部位: {lblCurrentPosition.Text}");
+                    }));
+                }
+
+                // 成交後延遲 600ms 自動查詢最新庫存部位，確保元大後台已同步寫入做最終一致性校驗
+                DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(600));
+            }
+            else
+            {
+                AppendLog($"【成交回報調試】解析價格或口數失敗。原始價格: '{A_Prc}', 原始口數: '{Deal_Qty}'");
             }
         }
 
-        private void OnRfOrdMatRF(string exc, string Omkt, string Bhno, string Acno, string Suba, string Symb, string Scnam, string O_Kind, string Buys, string S_Buys, string PriceType, string O_Prc1, string O_Prc2, string A_Prc, string O_Qty, string Deal_Qty, string O_Date, string O_Time, string Order_No, string O_Src, string O_Lin, string Oseq_No)
+        /// <summary>
+        /// 處理元大下單 API 委託即時結果回報事件。
+        /// </summary>
+        /// <param name="ID">委託 ID。</param>
+        /// <param name="result">委託結果字串，格式為「流水號,錯誤代碼,錯誤訊息」或以水管符號區隔。</param>
+        private void OnOrdResult(int ID, string result)
         {
-            if (Acno.Trim() != _currentAccount) return;
-
-            if (double.TryParse(A_Prc, out double price) && int.TryParse(Deal_Qty, out int qty))
+            Dispatcher.BeginInvoke(new Action(() =>
             {
-                _pnlCalculator.AddExecution(Symb, Buys, price, qty);
-
-                Dispatcher.BeginInvoke(new Action(() =>
+                if (string.IsNullOrEmpty(result)) return;
+                
+                // 元大 API OnOrdResult 可能以水管或逗號分隔，在此做通用拆分
+                string[] parts = result.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 3)
                 {
-                    UpdatePnLUI(_pnlCalculator.TotalPnL);
-                    AppendLog($"【外期成交回報】平倉損益更新。商品: {Symb.Trim()}, 買賣: {Buys.Trim()}, 價格: {price}, 口數: {qty}。累計今日平倉損益: NT$ {_pnlCalculator.TotalPnL}");
-                }));
-            }
+                    string seq = parts[0].Trim();
+                    string errCode = parts[1].Trim();
+                    string errMsg = parts[2].Trim();
+
+                    if (errCode == "0000" || errCode == "00000" || string.IsNullOrEmpty(errCode) || errCode == "0")
+                    {
+                        AppendLog($"【委託】送出委託成功！(流水號: {seq})");
+                    }
+                    else
+                    {
+                        AppendLog($"【委託】送出委託失敗！錯誤代碼: {errCode}, 原因: {errMsg} (流水號: {seq})");
+                    }
+                }
+                else
+                {
+                    AppendLog($"【委託】委託結果回報: {result}");
+                }
+            }));
+        }
+
+        /// <summary>
+        /// 處理元大下單 API 自動委託回報事件。
+        /// </summary>
+        private void OnOrdRptF(string Omkt, string Mktt, string Cmbf, string Statusc, string Ts_Code, string Ts_Msg, string Bhno, string AcNo, string Suba, string Symb, string Scnam, string O_Kind, string O_Type, string Buys, string S_Buys, string O_Prc, string O_Qty, string Work_Qty, string Kill_Qty, string Deal_Qty, string Order_No, string T_Date, string O_Date, string O_Time, string O_Src, string O_Lin, string A_Prc, string Oseq_No, string Err_Code, string Err_Msg, string R_Time, string D_Flag)
+        {
+            if (!IsMatchingAccount(AcNo)) return;
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // 決定買賣別的中文字串
+                string bsText = S_Buys.Trim();
+                if (string.IsNullOrEmpty(bsText))
+                {
+                    bsText = Buys.Trim() == "B" ? "買進" : "賣出";
+                }
+
+                // 決定委託狀態的說明字串
+                string statusText = Ts_Msg.Trim();
+                if (string.IsNullOrEmpty(statusText))
+                {
+                    statusText = Ts_Code == "04" ? "委託成功" : 
+                                 Ts_Code == "05" ? "委託失敗" : 
+                                 Ts_Code == "06" ? "全部成交" : 
+                                 Ts_Code == "07" ? "全部取消" : $"狀態代碼: {Ts_Code}";
+                }
+
+                string priceText = O_Prc.Trim();
+                string qtyText = O_Qty.Trim();
+                string symbolText = Symb.Trim();
+
+                // 判斷是否為異常、失敗或取消狀態
+                bool isFailedOrCancelled = Ts_Code == "05" || Ts_Code == "07" || !string.IsNullOrEmpty(Err_Msg.Trim());
+                if (isFailedOrCancelled)
+                {
+                    double parsedPriceVal = 0;
+                    if (double.TryParse(priceText, out parsedPriceVal))
+                    {
+                        int parsedPrice = (int)Math.Round(parsedPriceVal);
+                        string rawBuys = Buys.Trim().ToUpper();
+                        string rawSBuys = S_Buys.Trim().ToUpper();
+                        bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
+                        string itemType = isBuy ? "做多" : "做空";
+                        string orderNo = Order_No.Trim();
+
+                        // 優先透過委託書號尋找已綁定的列
+                        SimulationResult? targetItem = null;
+                        if (!string.IsNullOrEmpty(orderNo))
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                        }
+
+                        // 若找不到 (例如直接委託失敗，API未核發書號)，則以已勾選且尚未綁定書號的價格、方向與商品進行匹配
+                        if (targetItem == null)
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => 
+                                o.IsChecked && 
+                                o.BestAPrice == parsedPrice && 
+                                o.Type == itemType &&
+                                o.OrderedSymbol == symbolText);
+                        }
+
+                        if (targetItem != null)
+                        {
+                            AppendLog($"【交易】因委託回報為失敗/取消狀態 ({statusText})，自動取消觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} 的勾選。");
+                            // 先清空 OrderNo 與 OrderedSymbol，防止 PropertyChanged 事件重覆觸發 API 撤單
+                            targetItem.OrderNo = null;
+                            targetItem.OrderedSymbol = null;
+                            targetItem.IsChecked = false;
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(Err_Msg.Trim()))
+                {
+                    AppendLog($"【委託】{bsText} {symbolText} {qtyText}口 @ {priceText} 失敗：{Err_Msg.Trim()} (狀態: {statusText})");
+                }
+                else
+                {
+                    AppendLog($"【委託】{bsText} {symbolText} {qtyText}口 @ {priceText}：{statusText}");
+
+                    // 綁定委託書號與極值觀測列
+                    string orderNo = Order_No.Trim();
+                    double parsedPriceVal = 0;
+                    bool isPriceParsed = double.TryParse(priceText, out parsedPriceVal);
+                    if (!string.IsNullOrEmpty(orderNo) && isPriceParsed)
+                    {
+                        int parsedPrice = (int)Math.Round(parsedPriceVal);
+                        string rawBuys = Buys.Trim().ToUpper();
+                        string rawSBuys = S_Buys.Trim().ToUpper();
+                        bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
+                        string itemType = isBuy ? "做多" : "做空";
+
+                        var targetItem = _obsCollection.FirstOrDefault(o => 
+                            o.IsChecked && 
+                            string.IsNullOrEmpty(o.OrderNo) && 
+                            o.BestAPrice == parsedPrice && 
+                            o.Type == itemType);
+
+                        if (targetItem != null)
+                        {
+                            targetItem.OrderNo = orderNo;
+                            AppendLog($"【交易】成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {parsedPrice}");
+                        }
+                        else
+                        {
+                            // 備用容錯比對：若回報價格與 BestAPrice 有微小差距（如滑價或整數轉換問題），只要方向與商品代碼吻合且已勾選未綁定，就進行綁定
+                            targetItem = _obsCollection.FirstOrDefault(o =>
+                                o.IsChecked &&
+                                string.IsNullOrEmpty(o.OrderNo) &&
+                                o.Type == itemType &&
+                                o.OrderedSymbol == symbolText);
+
+                            if (targetItem != null)
+                            {
+                                targetItem.OrderNo = orderNo;
+                                AppendLog($"【交易】[容錯比對] 成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} (回報價: {parsedPrice})");
+                            }
+                        }
+                    }
+
+                    // 若狀態為成交，自動延遲 500ms 查詢最新庫存，更新當前庫存欄位
+                    if (Ts_Code == "06" || Ts_Code == "08" || statusText.Contains("成交"))
+                    {
+                        DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(500));
+                    }
+                }
+            }));
         }
 
         private void UpdatePnLUI(double pnl)
@@ -5232,7 +5666,8 @@ namespace ExtremeSignalAppCS
             }
             AppendLog("【帳務】手動觸發帳務與庫存查詢...");
             QueryTodayPnL();
-            QueryCurrentPositions();
+            // 延遲 600ms 發送庫存查詢，避免平行併發衝突
+            DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(600));
         }
     }
 

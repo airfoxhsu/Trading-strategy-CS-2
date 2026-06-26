@@ -1,9 +1,13 @@
 <Application x:Class="ExtremeSignalAppCS.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:sys="clr-namespace:System;assembly=mscorlib"
              xmlns:local="clr-namespace:ExtremeSignalAppCS"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <!-- ==================== 動態字型大小資源 ==================== -->
+        <sys:Double x:Key="GlobalFontSize">12</sys:Double>
+
         <!-- ==================== 暗黑科幻交易美學色彩系統 ==================== -->
         <SolidColorBrush x:Key="ExtremeDarkBg" Color="#121212"/>
         <SolidColorBrush x:Key="PanelDarkBg" Color="#1A1A1A"/>
@@ -32,7 +36,7 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="FontFamily" Value="Microsoft JhengHei"/>
-            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -73,7 +77,7 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="4,3"/>
             <Setter Property="FontFamily" Value="Consolas, Microsoft JhengHei"/>
-            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
             <Setter Property="CaretBrush" Value="White"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -105,7 +109,7 @@
             <Setter Property="HorizontalGridLinesBrush" Value="#252525"/>
             <Setter Property="VerticalGridLinesBrush" Value="#252525"/>
             <Setter Property="FontFamily" Value="Consolas"/>
-            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
             <Setter Property="RowHeaderWidth" Value="0"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
             <Setter Property="CanUserAddRows" Value="False"/>
@@ -135,6 +139,27 @@
                 <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#DCDCDC"/>
             </Style.Resources>
             <Setter Property="BorderThickness" Value="0"/>
+        </Style>
+
+        <!-- ==================== TextBlock 全域樣式 ==================== -->
+        <Style TargetType="TextBlock">
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
+        </Style>
+
+        <!-- ==================== Label 全域樣式 ==================== -->
+        <Style TargetType="Label">
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+
+        <!-- ==================== ComboBox 全域樣式 ==================== -->
+        <Style TargetType="ComboBox">
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
+        </Style>
+
+        <!-- ==================== CheckBox 全域樣式 ==================== -->
+        <Style TargetType="CheckBox">
+            <Setter Property="FontSize" Value="{DynamicResource GlobalFontSize}"/>
         </Style>
     </Application.Resources>
 </Application>

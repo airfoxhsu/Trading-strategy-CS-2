@@ -35,6 +35,10 @@ namespace ExtremeSignalAppCS.Models
         private int _stopLossPrice;
         private int _ampVal;
         private bool _isTargetPriceHighlighted;
+        private bool _isChecked;
+        private bool _isCheckable = true;
+        private string? _orderNo;
+        private string? _orderedSymbol;
 
         /// <summary>
         /// 顯示標籤 (如 "N=25 抓新高反轉")
@@ -175,6 +179,39 @@ namespace ExtremeSignalAppCS.Models
         /// 特殊反白標記 (A點價)
         /// </summary>
         public bool IsTargetPriceHighlighted { get => _isTargetPriceHighlighted; set => SetField(ref _isTargetPriceHighlighted, value); }
+
+        /// <summary>
+        /// 記錄使用者是否勾選此列。
+        /// </summary>
+        public bool IsChecked { get => _isChecked; set => SetField(ref _isChecked, value); }
+
+        /// <summary>
+        /// 控制 CheckBox 是否可用。當被設為 false 時，若原本已勾選，則會自動取消勾選。
+        /// </summary>
+        public bool IsCheckable
+        {
+            get => _isCheckable;
+            set
+            {
+                if (SetField(ref _isCheckable, value))
+                {
+                    if (!value && IsChecked)
+                    {
+                        IsChecked = false;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 記錄此列下單成功的委託書號 (OrderNo)。若未成功或未下單則為 null。
+        /// </summary>
+        public string? OrderNo { get => _orderNo; set => SetField(ref _orderNo, value); }
+
+        /// <summary>
+        /// 記錄此列下單時的完整商品代碼 (例如 TXFF6 / MXFF6)。
+        /// </summary>
+        public string? OrderedSymbol { get => _orderedSymbol; set => SetField(ref _orderedSymbol, value); }
 
         /// <summary>
         /// 建立空的 SimulationResult。
