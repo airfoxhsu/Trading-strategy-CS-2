@@ -376,17 +376,26 @@
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="選取" Width="Auto" MinWidth="45">
+                                <DataGridTemplateColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                    </Style>
+                                </DataGridTemplateColumn.CellStyle>
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <CheckBox IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}" 
                                                   IsEnabled="{Binding IsCheckable}" 
                                                   HorizontalAlignment="Center" 
-                                                  VerticalAlignment="Center">
+                                                  VerticalAlignment="Center"
+                                                  Cursor="Hand">
                                             <CheckBox.Style>
                                                 <Style TargetType="CheckBox">
                                                     <Style.Triggers>
                                                         <Trigger Property="IsEnabled" Value="False">
                                                             <Setter Property="Opacity" Value="0.25"/>
+                                                            <Setter Property="Cursor" Value="Arrow"/>
                                                         </Trigger>
                                                     </Style.Triggers>
                                                 </Style>
