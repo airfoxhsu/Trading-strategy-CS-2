@@ -1859,20 +1859,20 @@ namespace ExtremeSignalAppCS
                 RefocusChartOnTime(_lockedFocusTime, _lockedFocusPrice, false);
             }
 
-            // 5. 差量更新 DataGrid 行情與選取反白保留
-            var simulationResults = (List<SimulationResult>)result["simulation_results"];
-            UpdateObserverViews(simulationResults);
-
-            // 6. 更新底部狀態計數面板
-            RefreshInfoPanel();
-
-            // 7. 派發共用資料至未破分K監控與區間統計 (純渲染)
+            // 5. 派發共用資料至未破分K監控與區間統計 (純渲染)
             if (result.TryGetValue("shared_results_map", out var sharedObj) && sharedObj is Dictionary<int, List<SimulationResult>> sharedMap && sharedMap != null)
             {
                 UpdateIntervalStatsUI(sharedMap);
                 string priceStr = _lastMxfPrice.HasValue ? _lastMxfPrice.Value.ToString() : "N/A";
                 wndUnbrokenK.UpdateFromSharedData(sharedMap, priceStr, _lastMxfTime);
             }
+
+            // 6. 差量更新 DataGrid 行情與選取反白保留
+            var simulationResults = (List<SimulationResult>)result["simulation_results"];
+            UpdateObserverViews(simulationResults);
+
+            // 7. 更新底部狀態計數面板
+            RefreshInfoPanel();
         }
 
         public void PushTelegramMessage(string msg)
@@ -2212,14 +2212,30 @@ namespace ExtremeSignalAppCS
         /// </summary>
         private void RecalculateObserverCheckableStates()
         {
+            // 1. 計算大勢順勢方向指標 (排除歷史 history 與註解 annotation 項目)
+            var validItems = _obsCollection.Where(o => o.Type != null && !o.Tags.Contains("history") && !o.Tags.Contains("annotation")).ToList();
+            int totalShortCount = validItems.Count(o => o.Type == "做空");
+            int totalLongCount = validItems.Count(o => o.Type == "做多");
+            int unbrokenShortCount = validItems.Count(o => o.Type == "做空" && !o.IsBroken && (o.StopLossDisplay == null || !o.StopLossDisplay.Contains("已破")));
+            int unbrokenLongCount = validItems.Count(o => o.Type == "做多" && !o.IsBroken && (o.StopLossDisplay == null || !o.StopLossDisplay.Contains("已破")));
+
+            string totalTrend = totalShortCount > totalLongCount ? "Short" : (totalLongCount > totalShortCount ? "Long" : "Neutral");
+            string unbrokenTrend = unbrokenShortCount > unbrokenLongCount ? "Short" : (unbrokenLongCount > unbrokenShortCount ? "Long" : "Neutral");
+
+            bool forceDisableLong = totalTrend == "Short" && unbrokenTrend == "Short";
+            bool forceDisableShort = totalTrend == "Long" && unbrokenTrend == "Long";
+
+            // 2. 遍歷並設定每一列的可用性
             int count = _obsCollection.Count;
             for (int i = 0; i < count; i++)
             {
                 var current = _obsCollection[i];
+                
+                // 基礎判定邏輯 (原版)
+                bool baseCheckable = true;
                 if (current.IsBroken)
                 {
-                    // 順序優化攔截：在因為已破而即將把 IsCheckable 設為 false 之前，
-                    // 若原本處於已勾選且尚未觸發下單狀態，且最新成交價已碰觸或穿過 A 點價格，優先送出委託單！
+                    // 順序優化下單攔截
                     if (current.IsChecked && !current.IsTriggered)
                     {
                         int? latestPrice = current.OrderedSymbol != null && current.OrderedSymbol.StartsWith("TXF") ? _lastTxfPrice : _lastMxfPrice;
@@ -2256,29 +2272,58 @@ namespace ExtremeSignalAppCS
                             }
                         }
                     }
-
-                    current.IsCheckable = false;
-                    continue;
+                    baseCheckable = false;
                 }
-
-                if (current.Type != "做多" && current.Type != "做空")
+                else if (current.Type != "做多" && current.Type != "做空")
                 {
-                    current.IsCheckable = false;
-                    continue;
+                    baseCheckable = false;
                 }
-
-                bool hasActiveOpposite = false;
-                string oppositeType = current.Type == "做多" ? "做空" : "做多";
-                for (int j = i + 1; j < count; j++)
+                else
                 {
-                    var next = _obsCollection[j];
-                    if (next.Type == oppositeType && !next.IsBroken)
+                    bool hasActiveOpposite = false;
+                    string oppositeType = current.Type == "做多" ? "做空" : "做多";
+                    for (int j = i + 1; j < count; j++)
                     {
-                        hasActiveOpposite = true;
-                        break;
+                        var next = _obsCollection[j];
+                        if (next.Type == oppositeType && !next.IsBroken)
+                        {
+                            hasActiveOpposite = true;
+                            break;
+                        }
+                    }
+                    baseCheckable = !hasActiveOpposite;
+                }
+
+                // 套用大勢過濾限制
+                if (baseCheckable)
+                {
+                    if (forceDisableLong && current.Type == "做多")
+                    {
+                        baseCheckable = false;
+                    }
+                    else if (forceDisableShort && current.Type == "做空")
+                    {
+                        baseCheckable = false;
                     }
                 }
-                current.IsCheckable = !hasActiveOpposite;
+
+                // 寫入可用性，若導致已勾選的單子被取消，則使用 _isAutoCancelling 包裝以播放 Hand 警告音效與自動撤單
+                if (!baseCheckable && current.IsChecked)
+                {
+                    _isAutoCancelling = true;
+                    try
+                    {
+                        current.IsCheckable = false;
+                    }
+                    finally
+                    {
+                        _isAutoCancelling = false;
+                    }
+                }
+                else
+                {
+                    current.IsCheckable = baseCheckable;
+                }
             }
         }
 
