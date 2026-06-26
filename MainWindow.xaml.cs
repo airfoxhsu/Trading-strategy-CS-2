@@ -1054,6 +1054,17 @@ namespace ExtremeSignalAppCS
                         Interlocked.Exchange(ref _renderMxfTime, mt);
                     }
                 }
+                // 價格觸發下單監控
+                if (!_isReplaying && !_isPreloading)
+                {
+                    string monthCode = _engine.GetMonthCode();
+                    string completeSymbol = baseSymbol + monthCode;
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        CheckAndTriggerTouchOrders(completeSymbol, price);
+                    }));
+                }
+
                 // 與 UI 分離，延遲處理：背景即時 Tick 的寫入，不應被 UI 的更新拖慢
                 if (!_isReplaying && !_isPreloading && _isRealtimeUIEnabled)
                 {
@@ -2257,7 +2268,7 @@ namespace ExtremeSignalAppCS
             {
                 if (item.IsChecked)
                 {
-                    // === 送出下單委託 ===
+                    // === 啟動觸價下單監控 ===
                     // 1. 檢查 API 登入狀態
                     if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
                     {
@@ -2271,41 +2282,47 @@ namespace ExtremeSignalAppCS
                     string monthCode = _engine.GetMonthCode();
                     string symbol = baseSym + monthCode;
 
-                    // 3. 判斷買賣方向
-                    string buys = item.Type == "做多" ? "B" : "S";
-                    string price = item.BestAPrice.ToString();
-                    string qty = "1";
-
-                    AppendLog($"【交易】送出預掛下單委託：{symbol} {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price}");
-
-                    // 4. 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
-                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, symbol, price, qty, "0", "L", "R", "", "");
-                    AppendLog($"【交易】元大 API 下單回傳結果: {ret}");
-
-                    // 記錄下單時的合約代碼
+                    // 初始化監控狀態，暫不下單
                     item.OrderedSymbol = symbol;
+                    item.IsTriggered = false;
+                    item.OrderNo = null;
+
+                    AppendLog($"【交易】啟動價格監控，當價格來到 A 點價 {item.BestAPrice} 時將自動觸發預掛限價單。商品: {symbol}");
                 }
                 else
                 {
-                    // === 送出撤單委託 ===
-                    if (!string.Empty.Equals(item.OrderNo) && !string.IsNullOrEmpty(item.OrderNo) && !string.IsNullOrEmpty(item.OrderedSymbol))
+                    if (item.IsTriggered)
                     {
-                        if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                        // === 已觸發下單，送出撤單委託 ===
+                        if (!string.Empty.Equals(item.OrderNo) && !string.IsNullOrEmpty(item.OrderNo) && !string.IsNullOrEmpty(item.OrderedSymbol))
                         {
-                            AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
-                            return;
+                            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                            {
+                                AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
+                                return;
+                            }
+
+                            string buys = item.Type == "做多" ? "B" : "S";
+                            AppendLog($"【交易】送出撤單委託：{item.OrderedSymbol} 委託書號: {item.OrderNo}");
+
+                            // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
+                            string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", item.OrderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
+                            AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
                         }
-
-                        string buys = item.Type == "做多" ? "B" : "S";
-                        AppendLog($"【交易】送出撤單委託：{item.OrderedSymbol} 委託書號: {item.OrderNo}");
-
-                        // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
-                        string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", item.OrderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
-                        AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
-
-                        // 撤單後清除相關屬性
+                        
+                        // 清除相關屬性與觸發狀態
                         item.OrderNo = null;
                         item.OrderedSymbol = null;
+                        item.IsTriggered = false;
+                    }
+                    else
+                    {
+                        // === 未觸發下單，僅取消價格監控 ===
+                        if (!string.IsNullOrEmpty(item.OrderedSymbol))
+                        {
+                            AppendLog($"【交易】取消價格監控：{item.OrderedSymbol} @ A 點價 {item.BestAPrice}");
+                            item.OrderedSymbol = null;
+                        }
                     }
                 }
             }
@@ -2316,6 +2333,56 @@ namespace ExtremeSignalAppCS
             finally
             {
                 _isHandlingPropertyChange = false;
+            }
+        }
+
+        /// <summary>
+        /// 觸價監控核心：當最新成交價碰觸或穿過極值 A 點價時，觸發送出限價委託單。
+        /// 規則：
+        /// 1. 做空（抓新高反轉）：最新價 >= A 點價 時觸發下單。
+        /// 2. 做多（抓新低反轉）：最新價 <= A 點價 時觸發下單。
+        /// </summary>
+        private void CheckAndTriggerTouchOrders(string symbol, int currentPrice)
+        {
+            int count = _obsCollection.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var item = _obsCollection[i];
+                if (item.IsChecked && !item.IsTriggered && item.OrderedSymbol == symbol)
+                {
+                    bool isTrigger = false;
+                    if (item.Type == "做空" && currentPrice >= item.BestAPrice)
+                    {
+                        isTrigger = true;
+                    }
+                    else if (item.Type == "做多" && currentPrice <= item.BestAPrice)
+                    {
+                        isTrigger = true;
+                    }
+
+                    if (isTrigger)
+                    {
+                        item.IsTriggered = true;
+                        
+                        string buys = item.Type == "做多" ? "B" : "S";
+                        string price = item.BestAPrice.ToString();
+                        string qty = "1";
+
+                        AppendLog($"【交易】價格來到 A 點價，觸發預掛下單委託！商品: {item.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {currentPrice})");
+
+                        // 檢查 API 登入狀態
+                        if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                        {
+                            AppendLog("【交易】觸發下單失敗：元大交易 API 未登入。");
+                            item.IsChecked = false; // 失敗時取消勾選
+                            continue;
+                        }
+
+                        // 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
+                        string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.OrderedSymbol, price, qty, "0", "L", "R", "", "");
+                        AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
+                    }
+                }
             }
         }
 
@@ -3658,6 +3725,14 @@ namespace ExtremeSignalAppCS
                 _renderTxfPrice = price;
                 Volatile.Write(ref _renderTxfTime, mt);
             }
+
+            // 復盤價格觸發下單監控
+            string monthCode = _engine.GetMonthCode();
+            string completeSymbol = baseSym + monthCode;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                CheckAndTriggerTouchOrders(completeSymbol, price);
+            }));
         }
 
         /// <summary>

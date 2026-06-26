@@ -39,6 +39,7 @@ namespace ExtremeSignalAppCS.Models
         private bool _isCheckable = true;
         private string? _orderNo;
         private string? _orderedSymbol;
+        private bool _isTriggered;
 
         /// <summary>
         /// 顯示標籤 (如 "N=25 抓新高反轉")
@@ -212,6 +213,11 @@ namespace ExtremeSignalAppCS.Models
         /// 記錄此列下單時的完整商品代碼 (例如 TXFF6 / MXFF6)。
         /// </summary>
         public string? OrderedSymbol { get => _orderedSymbol; set => SetField(ref _orderedSymbol, value); }
+
+        /// <summary>
+        /// 記錄此列是否已觸發觸價下單。
+        /// </summary>
+        public bool IsTriggered { get => _isTriggered; set => SetField(ref _isTriggered, value); }
 
         /// <summary>
         /// 建立空的 SimulationResult。
