@@ -4371,12 +4371,24 @@ namespace ExtremeSignalAppCS
 
         /// <summary>
         /// 點選已被選取的行時手動取消反白選取，防護點點點狀態異常。
+        /// 若點擊的是 CheckBox 則不予攔截，讓勾選狀態能一次到位切換。
         /// </summary>
         private void DataGrid_CancelSelection(object sender, MouseButtonEventArgs e)
         {
             if (sender is not DataGrid dg) return;
 
-            // 獲取滑鼠點擊下的資料行物件
+            // 1. 檢查滑鼠點擊的元素及其父元素是否包含 CheckBox，若是則直接豁免，讓事件穿透
+            DependencyObject? currentDep = e.OriginalSource as DependencyObject;
+            while (currentDep != null)
+            {
+                if (currentDep is System.Windows.Controls.CheckBox)
+                {
+                    return; // 點擊的是 CheckBox，直接返回，不攔截且不取消反白
+                }
+                currentDep = VisualTreeHelper.GetParent(currentDep);
+            }
+
+            // 2. 獲取滑鼠點擊下的資料行物件
             DependencyObject dep = (DependencyObject)e.OriginalSource;
             while (dep != null && dep is not DataGridRow)
             {
