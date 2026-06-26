@@ -152,6 +152,7 @@ namespace ExtremeSignalAppCS
         private int _currentKlineInterval = 1;
         private int _currentObsN = 25;
         private int? _lastMxfPrice;
+        private int? _lastTxfPrice;
         private string _lastMxfTime = "";
         private string? _currentReplayDir;
         private string? _lastSelectedReplayDir;
@@ -1036,6 +1037,15 @@ namespace ExtremeSignalAppCS
                 // 完全 Lock-Free 的資料結構寫入 (Zero GC Allocation & No OS Lock)
                 _liveSymbolTrades[baseSymbol][session].Add(tick);
 
+                if (baseSymbol == "TXF")
+                {
+                    _lastTxfPrice = price;
+                }
+                else if (baseSymbol == "MXF")
+                {
+                    _lastMxfPrice = price;
+                }
+
                 // 實時 Render Loop 快取 (單向寫入)
                 if (!_isReplaying)
                 {
@@ -1367,6 +1377,10 @@ namespace ExtremeSignalAppCS
                     {
                         _lastMxfPrice = price;
                         _lastMxfTime = tStr;
+                    }
+                    else if (symbol == "TXF")
+                    {
+                        _lastTxfPrice = price;
                     }
 
                     // --- 2. 原本的極值掃描 ---
@@ -2204,6 +2218,45 @@ namespace ExtremeSignalAppCS
                 var current = _obsCollection[i];
                 if (current.IsBroken)
                 {
+                    // 順序優化攔截：在因為已破而即將把 IsCheckable 設為 false 之前，
+                    // 若原本處於已勾選且尚未觸發下單狀態，且最新成交價已碰觸或穿過 A 點價格，優先送出委託單！
+                    if (current.IsChecked && !current.IsTriggered)
+                    {
+                        int? latestPrice = current.OrderedSymbol != null && current.OrderedSymbol.StartsWith("TXF") ? _lastTxfPrice : _lastMxfPrice;
+                        if (latestPrice.HasValue)
+                        {
+                            bool isTrigger = false;
+                            if (current.Type == "做空" && latestPrice.Value >= current.BestAPrice)
+                            {
+                                isTrigger = true;
+                            }
+                            else if (current.Type == "做多" && latestPrice.Value <= current.BestAPrice)
+                            {
+                                isTrigger = true;
+                            }
+
+                            if (isTrigger)
+                            {
+                                current.IsTriggered = true; // 標記為已觸發
+                                string buys = current.Type == "做多" ? "B" : "S";
+                                string price = current.BestAPrice.ToString();
+                                string qty = "1";
+
+                                AppendLog($"【交易】價格來到 A 點價且判定已破，優先執行下單！商品: {current.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {latestPrice.Value})");
+
+                                if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
+                                {
+                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, current.OrderedSymbol, price, qty, "0", "L", "R", "", "");
+                                    AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
+                                }
+                                else
+                                {
+                                    AppendLog("【交易】觸發下單失敗：元大交易 API 未登入。");
+                                }
+                            }
+                        }
+                    }
+
                     current.IsCheckable = false;
                     continue;
                 }
@@ -3747,6 +3800,7 @@ namespace ExtremeSignalAppCS
             {
                 _renderTxfPrice = price;
                 Volatile.Write(ref _renderTxfTime, mt);
+                _lastTxfPrice = price;
             }
 
             // 復盤價格觸發下單監控
