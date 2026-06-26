@@ -378,7 +378,6 @@
                             <DataGridTemplateColumn Header="選取" Width="Auto" MinWidth="45">
                                 <DataGridTemplateColumn.CellStyle>
                                     <Style TargetType="DataGridCell">
-                                        <Setter Property="Cursor" Value="Hand"/>
                                         <Setter Property="Background" Value="Transparent"/>
                                         <Setter Property="BorderThickness" Value="0"/>
                                     </Style>
