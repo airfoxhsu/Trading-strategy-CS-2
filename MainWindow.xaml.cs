@@ -52,6 +52,7 @@ namespace ExtremeSignalAppCS
         private string _currentBranch = string.Empty;
         private string _currentAccount = string.Empty;
         private readonly Services.PnLCalculator _pnlCalculator = new();
+        private readonly object _logLock = new();
         private string _mktUser = string.Empty;
         private string _mktPwd = string.Empty;
         private bool _isOrdLoggedIn = false;
@@ -714,6 +715,8 @@ namespace ExtremeSignalAppCS
                     _yuantaOrd.OnLogonS -= OnOrdLogonS;
                     _yuantaOrd.OnUserDefinsFuncResult -= OnOrdUserDefinsFuncResult;
                     _yuantaOrd.OnOrdMatF -= OnOrdMatF;
+                    _yuantaOrd.OnOrdResult -= OnOrdResult;
+                    _yuantaOrd.OnOrdRptF -= OnOrdRptF;
                     AppendLog("【帳務】DoLogout 呼叫完成，註銷事件。");
                 }
             }
@@ -1752,7 +1755,24 @@ namespace ExtremeSignalAppCS
                             continue;
 
                         var key = item.ConfirmedKey;
-                        var state = _autoTradeStates.GetOrAdd(key, k => new AutoTradeState());
+                        AutoTradeState state;
+                        if (!_autoTradeStates.TryGetValue(key, out state!))
+                        {
+                            // ObsN 可能因 Tick 增量而變化，以 Price+ATime 搜尋既有狀態，防止建立新條目覆蓋掉已更新的失敗/成交狀態
+                            var existingKv = _autoTradeStates.FirstOrDefault(kv =>
+                                kv.Key.Price == key.Price &&
+                                kv.Key.ATime == key.ATime &&
+                                kv.Value.IsTriggered);
+                            if (existingKv.Key != default)
+                            {
+                                state = existingKv.Value;
+                                _autoTradeStates.TryAdd(key, state); // 以新 Key 也指向同一個狀態物件
+                            }
+                            else
+                            {
+                                state = _autoTradeStates.GetOrAdd(key, k => new AutoTradeState());
+                            }
+                        }
 
                         // 同步快取狀態至當前 item (防止重新計算時被預設值覆蓋)
                         item.TradeStatus = state.TradeStatus;
@@ -1787,7 +1807,10 @@ namespace ExtremeSignalAppCS
                             continue;
                         }
 
-                        if (!_bgProcessedKeys.Contains(key))
+                        // 使用 Price+ATime 檢查是否已處理過（容許 ObsN 變化）
+                        bool alreadyProcessed = _bgProcessedKeys.Contains(key) ||
+                            _bgProcessedKeys.Any(k => k.Price == key.Price && k.ATime == key.ATime);
+                        if (!alreadyProcessed)
                         {
                             _bgProcessedKeys.Add(key);
                             ProcessBackgroundAutoTrade(item);
@@ -1898,7 +1921,11 @@ namespace ExtremeSignalAppCS
 
                 var telegramMessages = (List<string>)result["telegram_messages"];
 
-                string logsStr = string.Join("\n", systemLogs);
+                string logsStr;
+                lock (_logLock)
+                {
+                    logsStr = string.Join("\n", systemLogs);
+                }
                 string tgInfo = string.IsNullOrEmpty(_latestTriggerLog) ? "" : _latestTriggerLog + "\n\n";
                 string fullContent = "═══ 系統即時監控日誌 ═══\n" + logsStr + "\n\n" + tgInfo + rtReport;
 
@@ -5130,10 +5157,13 @@ namespace ExtremeSignalAppCS
                     }
 
                     // 寫入帳務查詢日誌快取，上限保留 50 筆
-                    queryLogs.Add(logEntry);
-                    if (queryLogs.Count > 50)
+                    lock (_logLock)
                     {
-                        queryLogs.RemoveAt(0);
+                        queryLogs.Add(logEntry);
+                        if (queryLogs.Count > 50)
+                        {
+                            queryLogs.RemoveAt(0);
+                        }
                     }
                     // 渲染至右側的帳務查詢日誌，強制滾動至最底端
                     LogHighlighter.AppendLog(txtQueryOutput, logEntry, clear: false, forceScrollToEnd: true);
@@ -5141,10 +5171,13 @@ namespace ExtremeSignalAppCS
                 else
                 {
                     // 寫入一般監控日誌快取，上限保留 50 筆
-                    systemLogs.Add(logEntry);
-                    if (systemLogs.Count > 50)
+                    lock (_logLock)
                     {
-                        systemLogs.RemoveAt(0);
+                        systemLogs.Add(logEntry);
+                        if (systemLogs.Count > 50)
+                        {
+                            systemLogs.RemoveAt(0);
+                        }
                     }
                     // 渲染至左側的主監控日誌
                     LogHighlighter.AppendLog(txtOutput, text, clear: false, forceScrollToEnd);
