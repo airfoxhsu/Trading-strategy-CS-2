@@ -40,7 +40,11 @@ namespace ExtremeSignalAppCS.Models
         private string? _orderNo;
         private string? _orderedSymbol;
         private bool _isTriggered;
-
+        private string _tradeStatus = "未啟用下單";
+        private int _takeProfitPrice;
+        private string? _closeOrderNo;
+        private string? _oseqNo;
+        private string? _closeOseqNo;
         /// <summary>
         /// 顯示標籤 (如 "N=25 抓新高反轉")
         /// </summary>
@@ -180,6 +184,31 @@ namespace ExtremeSignalAppCS.Models
         /// 特殊反白標記 (A點價)
         /// </summary>
         public bool IsTargetPriceHighlighted { get => _isTargetPriceHighlighted; set => SetField(ref _isTargetPriceHighlighted, value); }
+
+        /// <summary>
+        /// 記錄交易狀態流轉 (例如: 未啟用下單, 已送出, 委託中, 已成交, 平倉中, 已平倉 (停損/停利), 逾時取消 (不再下單), 方向不符 (不再下單))
+        /// </summary>
+        public string TradeStatus { get => _tradeStatus; set => SetField(ref _tradeStatus, value); }
+
+        /// <summary>
+        /// 計算得出的停利價位
+        /// </summary>
+        public int TakeProfitPrice { get => _takeProfitPrice; set => SetField(ref _takeProfitPrice, value); }
+
+        /// <summary>
+        /// 平倉單的委託書號
+        /// </summary>
+        public string? CloseOrderNo { get => _closeOrderNo; set => SetField(ref _closeOrderNo, value); }
+
+        /// <summary>
+        /// 記錄此列下單成功的委託流水號 (OseqNo)。
+        /// </summary>
+        public string? OseqNo { get => _oseqNo; set => SetField(ref _oseqNo, value); }
+
+        /// <summary>
+        /// 平倉單的委託流水號
+        /// </summary>
+        public string? CloseOseqNo { get => _closeOseqNo; set => SetField(ref _closeOseqNo, value); }
 
         /// <summary>
         /// 記錄使用者是否勾選此列。

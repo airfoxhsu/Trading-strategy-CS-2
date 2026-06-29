@@ -298,8 +298,8 @@
             <!-- 3C. 雙數據表格 (1:1 比例) -->
             <Grid Grid.Row="2" Margin="0,4,0,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1*"/>
-                    <ColumnDefinition Width="1*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- K線表格 -->
@@ -348,7 +348,7 @@
                             <DataGridTextColumn Header="低" Binding="{Binding Low}" Width="Auto" CellStyle="{StaticResource ObsHighlightCellStyle}"/>
                             <DataGridTextColumn Header="開" Binding="{Binding Open}" Width="Auto" CellStyle="{StaticResource ObsHighlightCellStyle}"/>
                             <DataGridTextColumn Header="收" Binding="{Binding Close}" Width="Auto" CellStyle="{StaticResource ObsHighlightCellStyle}"/>
-                            <DataGridTextColumn Header="訊號標記" Binding="{Binding Signals}" Width="*"/>
+                            <DataGridTextColumn Header="訊號標記" Binding="{Binding Signals}" Width="Auto" MinWidth="70"/>
                             <DataGridTextColumn Header="突破上高" Binding="{Binding BreakHigh}" Width="Auto"/>
                             <DataGridTextColumn Header="跌破上低" Binding="{Binding BreakLow}" Width="Auto"/>
                         </DataGrid.Columns>
@@ -375,35 +375,8 @@
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="選取" Width="Auto" MinWidth="45">
-                                <DataGridTemplateColumn.CellStyle>
-                                    <Style TargetType="DataGridCell">
-                                        <Setter Property="Background" Value="Transparent"/>
-                                        <Setter Property="BorderThickness" Value="0"/>
-                                    </Style>
-                                </DataGridTemplateColumn.CellStyle>
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <CheckBox IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}" 
-                                                  IsEnabled="{Binding IsCheckable}" 
-                                                  HorizontalAlignment="Center" 
-                                                  VerticalAlignment="Center"
-                                                  Cursor="Hand">
-                                            <CheckBox.Style>
-                                                <Style TargetType="CheckBox">
-                                                    <Style.Triggers>
-                                                        <Trigger Property="IsEnabled" Value="False">
-                                                            <Setter Property="Opacity" Value="0.25"/>
-                                                            <Setter Property="Cursor" Value="Arrow"/>
-                                                        </Trigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </CheckBox.Style>
-                                        </CheckBox>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="類型" Binding="{Binding DisplayTitle}" Width="*" MinWidth="100"/>
+                            <DataGridTextColumn Header="下單狀態" Binding="{Binding TradeStatus}" Width="*" MinWidth="110"/>
+                            <DataGridTextColumn Header="類型" Binding="{Binding DisplayTitle}" Width="Auto" MinWidth="100"/>
                             <DataGridTextColumn Header="A點時間" Binding="{Binding BestATimeDisplay}" Width="Auto" MinWidth="75"/>
                             <DataGridTextColumn Header="A點價" Binding="{Binding BestAPrice}" Width="Auto" MinWidth="55">
                                 <DataGridTextColumn.CellStyle>
@@ -467,9 +440,13 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,30,0">
+                    <Label Content="自動下單:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <CheckBox x:Name="chkAutoTradeBuy" Content="做多" Foreground="White" VerticalAlignment="Center" Margin="0,0,8,0" Checked="ChkAutoTradeBuy_Changed" Unchecked="ChkAutoTradeBuy_Changed"/>
+                    <CheckBox x:Name="chkAutoTradeSell" Content="做空" Foreground="White" VerticalAlignment="Center" Margin="0,0,16,0" Checked="ChkAutoTradeSell_Changed" Unchecked="ChkAutoTradeSell_Changed"/>
+
                     <Label Content="下單品種:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                    <RadioButton x:Name="rbTX" Content="大臺" Foreground="White" GroupName="SymbolGroup" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                    <RadioButton x:Name="rbMTX" Content="小臺" Foreground="White" GroupName="SymbolGroup" IsChecked="True" VerticalAlignment="Center"/>
+                    <RadioButton x:Name="rbTX" Content="大臺" Foreground="White" GroupName="SymbolGroup" VerticalAlignment="Center" Margin="0,0,8,0" Checked="RbTX_Changed" Unchecked="RbTX_Changed"/>
+                    <RadioButton x:Name="rbMTX" Content="小臺" Foreground="White" GroupName="SymbolGroup" IsChecked="True" VerticalAlignment="Center" Checked="RbTX_Changed" Unchecked="RbTX_Changed"/>
                 </StackPanel>
             </Grid>
         </Border>

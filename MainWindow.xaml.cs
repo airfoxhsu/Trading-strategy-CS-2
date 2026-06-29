@@ -73,6 +73,18 @@ namespace ExtremeSignalAppCS
         private readonly Dictionary<string, Dictionary<string, List<PendingTrigger>>> _rtTriggers;
         private readonly Dictionary<string, Dictionary<string, List<CompletedTrigger>>> _rtCompletedDetails;
 
+        // 新增：自動交易全局開關與快取變數
+        private volatile bool _isAutoTradeBuyEnabled = false;
+        private volatile bool _isAutoTradeSellEnabled = false;
+        private volatile bool _isTxfSelected = false; // 是否選中大臺
+        private volatile bool _isBuyLocked = false;
+        private volatile bool _isSellLocked = false;
+        private volatile int _lastBuyStopLossPrice = 0;
+        private volatile int _lastSellStopLossPrice = 0;
+        private readonly HashSet<(int Price, string ATime, int ObsN)> _bgProcessedKeys = new();
+        private readonly Dictionary<string, (int Price, string Type, string Symbol, string Status)> _unboundOrderReplies = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Price, string ATime, int ObsN), AutoTradeState> _autoTradeStates = new();
+
         private readonly System.Threading.Lock _rtLock = new(); // C# 13 新型執行緒同步安全鎖
 
         // 靜態編譯期 Regex 產生器
@@ -1071,7 +1083,7 @@ namespace ExtremeSignalAppCS
                     string completeSymbol = baseSymbol + monthCode;
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        CheckAndTriggerTouchOrders(completeSymbol, price);
+                        MonitorPositionsForStopLossAndTakeProfit(completeSymbol, price);
                     }));
                 }
 
@@ -1731,6 +1743,58 @@ namespace ExtremeSignalAppCS
                     currentMxfTradesCount
                 );
 
+                // 背景瞬間自動下單檢查 (記憶體產生的瞬間)
+                if (simulationResults != null && simulationResults.Count > 0)
+                {
+                    foreach (var item in simulationResults)
+                    {
+                        if (item.Type == null || item.Tags.Contains("history") || item.Tags.Contains("annotation"))
+                            continue;
+
+                        var key = item.ConfirmedKey;
+                        var state = _autoTradeStates.GetOrAdd(key, k => new AutoTradeState());
+
+                        // 同步快取狀態至當前 item (防止重新計算時被預設值覆蓋)
+                        item.TradeStatus = state.TradeStatus;
+                        item.TakeProfitPrice = state.TakeProfitPrice;
+                        item.OrderedSymbol = state.OrderedSymbol;
+                        item.IsTriggered = state.IsTriggered;
+                        item.OrderNo = state.OrderNo;
+                        item.CloseOrderNo = state.CloseOrderNo;
+                        if (state.StopLossPrice != 0)
+                        {
+                            item.StopLossPrice = state.StopLossPrice;
+                            // 若引擎判定已破或顯示字串帶有"已破"，則強制加上"(已破)"標籤並同步更新快取，防止被舊狀態覆蓋
+                            if (item.IsBroken || (item.StopLossDisplay != null && item.StopLossDisplay.Contains("已破")))
+                            {
+                                item.StopLossDisplay = $"{state.StopLossPrice}(已破)";
+                                state.StopLossDisplay = item.StopLossDisplay;
+                            }
+                            else
+                            {
+                                item.StopLossDisplay = state.StopLossDisplay;
+                            }
+                        }
+
+                        // 規則 2: N 數值一定要大於 10 (暫時放寬為大於0，測試用)
+                        if (item.ObsN <= 0)
+                        {
+                            if (item.TradeStatus == "未啟用下單")
+                            {
+                                item.TradeStatus = "N<=10 (不再下單)";
+                                state.TradeStatus = "N<=10 (不再下單)";
+                            }
+                            continue;
+                        }
+
+                        if (!_bgProcessedKeys.Contains(key))
+                        {
+                            _bgProcessedKeys.Add(key);
+                            ProcessBackgroundAutoTrade(item);
+                        }
+                    }
+                }
+
                 _lastKlineData = klineData;
                 _lastSimulationResults = simulationResults;
 
@@ -2161,7 +2225,54 @@ namespace ExtremeSignalAppCS
                 t.BIndex = s.BIndex;
                 t.ObsN = s.ObsN;
                 t.UpdateTags(s.Tags);
+                // 複製自動交易屬性
+                t.TradeStatus = s.TradeStatus;
+                t.TakeProfitPrice = s.TakeProfitPrice;
+                t.OrderedSymbol = s.OrderedSymbol;
+                t.IsTriggered = s.IsTriggered;
+                t.CloseOrderNo = s.CloseOrderNo;
             });
+
+            // 處理在背景下單時非同步回報的 OrderNo 綁定 (解決競態問題)
+            foreach (var item in _obsCollection)
+            {
+                if (item.TradeStatus == "已送出" && string.IsNullOrEmpty(item.OrderNo))
+                {
+                    string? matchOrderNo = null;
+                    string matchStatus = "委託中";
+                    lock (_unboundOrderReplies)
+                    {
+                        var matchKey = _unboundOrderReplies.FirstOrDefault(kv => 
+                            kv.Value.Price == item.BestAPrice && 
+                            kv.Value.Type == item.Type && 
+                            kv.Value.Symbol == item.OrderedSymbol);
+                        
+                        if (matchKey.Key != null)
+                        {
+                            matchOrderNo = matchKey.Key;
+                            matchStatus = matchKey.Value.Status;
+                        }
+                    }
+
+                    if (matchOrderNo != null)
+                    {
+                        item.OrderNo = matchOrderNo;
+                        item.TradeStatus = matchStatus;
+                        
+                        AppendLog($"【自動交易】已成功將暫存的委託書號 {matchOrderNo} 綁定至剛載入的極值列：{item.DisplayTitle} (狀態: {matchStatus})");
+                        
+                        lock (_unboundOrderReplies)
+                        {
+                            _unboundOrderReplies.Remove(matchOrderNo);
+                        }
+
+                        if (matchStatus == "委託中")
+                        {
+                            StartOrderTimeoutMonitor(item, matchOrderNo);
+                        }
+                    }
+                }
+            }
 
             RecalculateObserverCheckableStates();
 
@@ -2257,6 +2368,17 @@ namespace ExtremeSignalAppCS
                                 if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
                                 {
                                     string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, current.OrderedSymbol, price, qty, "0", "L", "R", "", "");
+                                    string[] retParts = ret.Split('|');
+                                    if (retParts.Length > 0)
+                                    {
+                                        string oseqNo = retParts[0].Trim();
+                                        current.OseqNo = oseqNo;
+                                        var key = current.ConfirmedKey;
+                                        if (_autoTradeStates.TryGetValue(key, out var state))
+                                        {
+                                            state.OseqNo = oseqNo;
+                                        }
+                                    }
                                     AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
                                 }
                                 else
@@ -2355,157 +2477,95 @@ namespace ExtremeSignalAppCS
         private bool _isAutoCancelling = false;
 
         /// <summary>
-        /// 處理觀測表項目屬性變更，特別是當使用者勾選或取消勾選 (IsChecked) 時進行委託下單與撤單。
+        /// 處理觀測表項目屬性變更 (已簡化，自動交易不由勾選事件觸發)。
         /// </summary>
-#pragma warning disable CA1416
         private void ObsItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName != nameof(SimulationResult.IsChecked)) return;
-            if (sender is not SimulationResult item) return;
-
-            // 防重入保護
-            if (_isHandlingPropertyChange) return;
-            _isHandlingPropertyChange = true;
-
-            try
-            {
-                if (item.IsChecked)
-                {
-                    // === 啟動觸價下單監控 ===
-                    // 1. 檢查 API 登入狀態
-                    if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
-                    {
-                        System.Media.SystemSounds.Hand.Play(); // 播放失敗警告音
-                        MessageBox.Show("元大交易 API 未登入，請先完成登入與帳務連線！", "下單失敗", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        item.IsChecked = false; // 自動取消勾選
-                        return;
-                    }
-
-                    // 2. 判斷品種
-                    string baseSym = rbTX.IsChecked == true ? "TXF" : "MXF";
-                    string monthCode = _engine.GetMonthCode();
-                    string symbol = baseSym + monthCode;
-
-                    // 初始化監控狀態，暫不下單
-                    item.OrderedSymbol = symbol;
-                    item.IsTriggered = false;
-                    item.OrderNo = null;
-
-                    AppendLog($"【交易】啟動價格監控，當價格來到 A 點價 {item.BestAPrice} 時將自動觸發預掛限價單。商品: {symbol}");
-                    System.Media.SystemSounds.Asterisk.Play(); // 播放啟動監控音效
-                }
-                else
-                {
-                    if (item.IsTriggered)
-                    {
-                        // === 已觸發下單，送出撤單委託 ===
-                        if (!string.Empty.Equals(item.OrderNo) && !string.IsNullOrEmpty(item.OrderNo) && !string.IsNullOrEmpty(item.OrderedSymbol))
-                        {
-                            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
-                            {
-                                AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
-                                return;
-                            }
-
-                            string buys = item.Type == "做多" ? "B" : "S";
-                            AppendLog($"【交易】送出撤單委託：{item.OrderedSymbol} 委託書號: {item.OrderNo}");
-
-                            // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
-                            string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", item.OrderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
-                            AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
-                        }
-                        
-                        // 清除相關屬性與觸發狀態
-                        item.OrderNo = null;
-                        item.OrderedSymbol = null;
-                        item.IsTriggered = false;
-                    }
-                    else
-                    {
-                        // === 未觸發下單，僅取消價格監控 ===
-                        if (!string.IsNullOrEmpty(item.OrderedSymbol))
-                        {
-                            AppendLog($"【交易】取消價格監控：{item.OrderedSymbol} @ A 點價 {item.BestAPrice}");
-                            item.OrderedSymbol = null;
-                        }
-                    }
-
-                    // 根據是否為自動取消播放不同音效
-                    if (_isAutoCancelling)
-                    {
-                        System.Media.SystemSounds.Hand.Play();
-                    }
-                    else
-                    {
-                        System.Media.SystemSounds.Beep.Play();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AppendLog($"【交易】處理委託事件發生異常: {ex.Message}");
-            }
-            finally
-            {
-                _isHandlingPropertyChange = false;
-            }
+            // 自動交易已移除 CheckBox 手動勾選邏輯，此處僅預留作 PropertyChanged 監聽
         }
-#pragma warning restore CA1416
 
         /// <summary>
-        /// 觸價監控核心：當最新成交價碰觸或穿過極值 A 點價時，觸發送出限價委託單。
-        /// 規則：
-        /// 1. 做空（抓新高反轉）：最新價 >= A 點價 時觸發下單。
-        /// 2. 做多（抓新低反轉）：最新價 <= A 點價 時觸發下單。
+        /// 自動交易持倉監控：當最新成交價更新時，遍歷已成交持倉，判斷是否穿價觸發停損或停利平倉。
         /// </summary>
-        private void CheckAndTriggerTouchOrders(string symbol, int currentPrice)
+        private void MonitorPositionsForStopLossAndTakeProfit(string symbol, int currentPrice)
         {
             int count = _obsCollection.Count;
             for (int i = 0; i < count; i++)
             {
                 var item = _obsCollection[i];
-                if (item.IsChecked && !item.IsTriggered && item.OrderedSymbol == symbol)
+                if (item.OrderedSymbol != symbol || item.TradeStatus != "已成交")
                 {
-                    bool isTrigger = false;
-                    if (item.Type == "做空" && currentPrice >= item.BestAPrice)
+                    continue;
+                }
+
+                bool triggerClose = false;
+                string closeType = "";
+
+                if (item.Type == "做空")
+                {
+                    // 做空停損在上方 (穿價：最新價大於停損價)
+                    if (currentPrice > item.StopLossPrice)
                     {
-                        isTrigger = true;
+                        triggerClose = true;
+                        closeType = "停損";
                     }
-                    else if (item.Type == "做多" && currentPrice <= item.BestAPrice)
+                    // 做空停利在下方 (穿價：最新價小於停利價)
+                    else if (currentPrice < item.TakeProfitPrice)
                     {
-                        isTrigger = true;
+                        triggerClose = true;
+                        closeType = "停利";
                     }
-
-                    if (isTrigger)
+                }
+                else if (item.Type == "做多")
+                {
+                    // 做多停損在下方 (穿價：最新價小於停損價)
+                    if (currentPrice < item.StopLossPrice)
                     {
-                        item.IsTriggered = true;
-                        
-                        string buys = item.Type == "做多" ? "B" : "S";
-                        string price = item.BestAPrice.ToString();
-                        string qty = "1";
-
-                        AppendLog($"【交易】價格來到 A 點價，觸發預掛下單委託！商品: {item.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {currentPrice})");
-
-                        // 檢查 API 登入狀態
-                        if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
-                        {
-                            AppendLog("【交易】觸發下單失敗：元大交易 API 未登入。");
-                            _isAutoCancelling = true;
-                            try
-                            {
-                                item.IsChecked = false; // 失敗時取消勾選
-                            }
-                            finally
-                            {
-                                _isAutoCancelling = false;
-                            }
-                            continue;
-                        }
-
-                        // 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
-                        string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.OrderedSymbol, price, qty, "0", "L", "R", "", "");
-                        AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
+                        triggerClose = true;
+                        closeType = "停損";
                     }
+                    // 做多停利在上方 (穿價：最新價大於停利價)
+                    else if (currentPrice > item.TakeProfitPrice)
+                    {
+                        triggerClose = true;
+                        closeType = "停利";
+                    }
+                }
+
+                if (triggerClose)
+                {
+                    item.TradeStatus = "平倉中"; // 避免重複平倉
+
+                    var key = item.ConfirmedKey;
+                    var state = _autoTradeStates.GetOrAdd(key, k => new AutoTradeState());
+                    state.TradeStatus = "平倉中";
+
+                    if (closeType == "停損")
+                    {
+                        item.StopLossDisplay = $"{item.StopLossPrice} (已停損)";
+                        state.StopLossDisplay = $"{item.StopLossPrice} (已停損)";
+                    }
+                    else if (closeType == "停利")
+                    {
+                        item.StopLossDisplay = $"{item.StopLossPrice} (已停利)";
+                        state.StopLossDisplay = $"{item.StopLossPrice} (已停利)";
+                    }
+
+                    string closeBuys = item.Type == "做多" ? "S" : "B"; // 反向平倉
+
+                    AppendLog($"【自動交易】持倉觸發 {closeType} 平倉監控！最新價: {currentPrice}，停損價: {item.StopLossPrice}，停利價: {item.TakeProfitPrice}，送出平倉單！");
+
+                    if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                    {
+                        AppendLog("【自動交易】平倉失敗：元大交易 API 未登入。");
+                        item.TradeStatus = $"平倉失敗 ({closeType})";
+                        if (state != null) state.TradeStatus = $"平倉失敗 ({closeType})";
+                        continue;
+                    }
+
+                    // 呼叫 API 送出平倉委託，使用市價 (PriType="M")，IOC (OrdCond="I")
+                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, item.OrderedSymbol, "0", "1", "0", "M", "I", "", "");
+                    AppendLog($"【自動交易】元大 API 平倉回傳結果: {ret}");
                 }
             }
         }
@@ -3856,7 +3916,7 @@ namespace ExtremeSignalAppCS
             string completeSymbol = baseSym + monthCode;
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                CheckAndTriggerTouchOrders(completeSymbol, price);
+                MonitorPositionsForStopLossAndTakeProfit(completeSymbol, price);
             }));
         }
 
@@ -5008,6 +5068,11 @@ namespace ExtremeSignalAppCS
         /// <param name="forceScrollToEnd">是否強制將滾動條拉至最底部。</param>
         private void AppendLog(string text, bool clear = false, bool forceScrollToEnd = false)
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(() => AppendLog(text, clear, forceScrollToEnd)));
+                return;
+            }
             // 初始化並獲取全域系統日誌與帳務日誌的資源快取清單
             if (!App.Current.Resources.Contains("_system_logs"))
             {
@@ -5203,7 +5268,8 @@ namespace ExtremeSignalAppCS
         /// <returns>若匹配則傳回 true，否則傳回 false。</returns>
         private bool IsMatchingAccount(string? acNo)
         {
-            if (string.IsNullOrEmpty(acNo)) return false;
+            // 放寬：若 API 回報未帶帳號（如退單、異常失敗），預設為相符，防止被過濾器誤殺
+            if (string.IsNullOrEmpty(acNo)) return true;
             string target = acNo.Trim();
             if (string.IsNullOrEmpty(_currentAccount)) return false;
 
@@ -5715,14 +5781,12 @@ namespace ExtremeSignalAppCS
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                // 決定買賣別的中文字串
                 string bsText = S_Buys.Trim();
                 if (string.IsNullOrEmpty(bsText))
                 {
                     bsText = Buys.Trim() == "B" ? "買進" : "賣出";
                 }
 
-                // 決定委託狀態的說明字串
                 string statusText = Ts_Msg.Trim();
                 if (string.IsNullOrEmpty(statusText))
                 {
@@ -5735,109 +5799,267 @@ namespace ExtremeSignalAppCS
                 string priceText = O_Prc.Trim();
                 string qtyText = O_Qty.Trim();
                 string symbolText = Symb.Trim();
+                string orderNo = Order_No.Trim();
+                string oseqNo = Oseq_No.Trim();
 
-                // 判斷是否為異常、失敗或取消狀態
-                bool isFailedOrCancelled = Ts_Code == "05" || Ts_Code == "07" || !string.IsNullOrEmpty(Err_Msg.Trim());
+                double parsedPriceVal = 0;
+                int parsedPrice = 0;
+                if (double.TryParse(priceText, out parsedPriceVal))
+                {
+                    parsedPrice = (int)Math.Round(parsedPriceVal);
+                }
+
+                string rawBuys = Buys.Trim().ToUpper();
+                string rawSBuys = S_Buys.Trim().ToUpper();
+                bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
+                string itemType = isBuy ? "做多" : "做空";
+
+                AppendLog($"【自動交易】收到委託回報：{bsText} {symbolText} {qtyText}口 @ {priceText} 書號: {orderNo}，狀態: {statusText}");
+
+                // 嘗試從自動交易快取字典中找到 match 的項目 (優先使用流水號 OseqNo)
+                AutoTradeState? matchState = null;
+                var matchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
+                    (!string.IsNullOrEmpty(oseqNo) && (kv.Value.OseqNo == oseqNo || kv.Value.CloseOseqNo == oseqNo)) ||
+                    (string.IsNullOrEmpty(oseqNo) && !string.IsNullOrEmpty(orderNo) && (kv.Value.OrderNo == orderNo || kv.Value.CloseOrderNo == orderNo))
+                );
+                
+                // 如果流水號和書號都找不到，才使用模糊配對 (防備用)
+                if (matchKeyVal.Key == default)
+                {
+                    matchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
+                        kv.Value.OrderedSymbol == symbolText && 
+                        kv.Value.IsTriggered &&
+                        (kv.Value.TradeStatus == "已送出" || kv.Value.TradeStatus == "委託中" || kv.Value.TradeStatus == "平倉中")
+                    );
+                }
+
+                if (matchKeyVal.Key != default)
+                {
+                    matchState = matchKeyVal.Value;
+                }
+
+                // 放寬失敗判定，包含 Ts_Code == "09" (退單) 及狀態文字中含有退單額度保證金等訊息
+                bool isFailedOrCancelled = Ts_Code == "05" || Ts_Code == "07" || Ts_Code == "09" || 
+                                           !string.IsNullOrEmpty(Err_Msg.Trim()) ||
+                                           statusText.Contains("失敗") || statusText.Contains("退單") || 
+                                           statusText.Contains("額度") || statusText.Contains("保證金");
                 if (isFailedOrCancelled)
                 {
-                    double parsedPriceVal = 0;
-                    if (double.TryParse(priceText, out parsedPriceVal))
+                    // 1. 處理失敗或取消
+                    SimulationResult? targetItem = null;
+                    if (!string.IsNullOrEmpty(oseqNo))
                     {
-                        int parsedPrice = (int)Math.Round(parsedPriceVal);
-                        string rawBuys = Buys.Trim().ToUpper();
-                        string rawSBuys = S_Buys.Trim().ToUpper();
-                        bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
-                        string itemType = isBuy ? "做多" : "做空";
-                        string orderNo = Order_No.Trim();
+                        targetItem = _obsCollection.FirstOrDefault(o => o.OseqNo == oseqNo || o.CloseOseqNo == oseqNo);
+                    }
+                    if (targetItem == null && !string.IsNullOrEmpty(orderNo))
+                    {
+                        targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo || o.CloseOrderNo == orderNo);
+                    }
 
-                        // 優先透過委託書號尋找已綁定的列
-                        SimulationResult? targetItem = null;
-                        if (!string.IsNullOrEmpty(orderNo))
+                    if (targetItem == null)
+                    {
+                        targetItem = _obsCollection.FirstOrDefault(o => 
+                            o.IsTriggered &&
+                            (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
+                            o.Type == itemType &&
+                            o.OrderedSymbol == symbolText); // 移除 TradeStatus 限制，改用 IsTriggered，防範競態條件
+                    }
+
+                    if (targetItem == null)
+                    {
+                        // Fallback: 僅比對商品、方向的第一筆下單項目（不限價格，防 API 價格回傳 0）
+                        targetItem = _obsCollection.FirstOrDefault(o => 
+                            o.IsTriggered &&
+                            o.Type == itemType &&
+                            o.OrderedSymbol == symbolText);
+                    }
+
+                    // 若精確定位到 targetItem，則以 A點價格與時間唯一鍵精確關聯快取狀態，忽略 ObsN 的可能微小差異，防止狀態覆蓋 Bug
+                    if (targetItem != null)
+                    {
+                        var failMatchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
+                            kv.Key.Price == targetItem.BestAPrice && 
+                            kv.Key.ATime == targetItem.BestATime);
+                        if (failMatchKeyVal.Key != default)
                         {
-                            targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                            matchState = failMatchKeyVal.Value;
                         }
+                    }
 
-                        // 若找不到 (例如直接委託失敗，API未核發書號)，則以已勾選且尚未綁定書號的價格、方向與商品進行匹配
-                        if (targetItem == null)
+                    string failReason = !string.IsNullOrEmpty(Err_Msg.Trim()) ? Err_Msg.Trim() : statusText;
+                    if (failReason.Contains("保證金") || failReason.Contains("額度") || failReason.Contains("超過交易額度"))
+                    {
+                        failReason = "保證金不足";
+                    }
+
+                    if (targetItem != null)
+                    {
+                        if (targetItem.TradeStatus == "平倉中")
                         {
-                            targetItem = _obsCollection.FirstOrDefault(o => 
-                                o.IsChecked && 
-                                o.BestAPrice == parsedPrice && 
-                                o.Type == itemType &&
-                                o.OrderedSymbol == symbolText);
+                            AppendLog($"【自動交易】平倉委託失敗！書號: {orderNo}，還原該列為「已成交」以重新監控。");
+                            targetItem.TradeStatus = "已成交";
+                            targetItem.CloseOrderNo = null;
                         }
-
-                        if (targetItem != null)
+                        else
                         {
-                            AppendLog($"【交易】因委託回報為失敗/取消狀態 ({statusText})，自動取消觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} 的勾選。");
-                            // 先清空 OrderNo 與 OrderedSymbol，防止 PropertyChanged 事件重覆觸發 API 撤單
+                            AppendLog($"【自動交易】開倉委託失敗！書號: {orderNo}，原因: {failReason}");
+                            targetItem.TradeStatus = $"失敗 ({failReason})";
                             targetItem.OrderNo = null;
-                            targetItem.OrderedSymbol = null;
-                            
-                            _isAutoCancelling = true;
-                            try
-                            {
-                                targetItem.IsChecked = false;
-                            }
-                            finally
-                            {
-                                _isAutoCancelling = false;
-                            }
+                            // 失敗依然保留停損價數值，方便觀看
+                        }
+                    }
+
+                    if (matchState != null)
+                    {
+                        if (matchState.TradeStatus == "平倉中")
+                        {
+                            matchState.TradeStatus = "Refocus";
+                            matchState.TradeStatus = "已成交";
+                            matchState.CloseOrderNo = null;
+                        }
+                        else
+                        {
+                            matchState.TradeStatus = $"失敗 ({failReason})";
+                            matchState.OrderNo = null;
+                            // 失敗依然保留停損價數值，方便觀看
                         }
                     }
                 }
-
-                if (!string.IsNullOrEmpty(Err_Msg.Trim()))
-                {
-                    AppendLog($"【委託】{bsText} {symbolText} {qtyText}口 @ {priceText} 失敗：{Err_Msg.Trim()} (狀態: {statusText})");
-                }
                 else
                 {
-                    AppendLog($"【委託】{bsText} {symbolText} {qtyText}口 @ {priceText}：{statusText}");
-
-                    // 綁定委託書號與極值觀測列
-                    string orderNo = Order_No.Trim();
-                    double parsedPriceVal = 0;
-                    bool isPriceParsed = double.TryParse(priceText, out parsedPriceVal);
-                    if (!string.IsNullOrEmpty(orderNo) && isPriceParsed)
+                    // 2. 處理成功或成交
+                    if (Ts_Code == "04") // 委託成功
                     {
-                        int parsedPrice = (int)Math.Round(parsedPriceVal);
-                        string rawBuys = Buys.Trim().ToUpper();
-                        string rawSBuys = S_Buys.Trim().ToUpper();
-                        bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
-                        string itemType = isBuy ? "做多" : "做空";
-
+                        // 尋找開倉或平倉匹配項目
                         var targetItem = _obsCollection.FirstOrDefault(o => 
-                            o.IsChecked && 
+                            o.IsTriggered &&
                             string.IsNullOrEmpty(o.OrderNo) && 
-                            o.BestAPrice == parsedPrice && 
-                            o.Type == itemType);
+                            // 修正：比對下單價格，應使用 TrigPrice 進場價而非 BestAPrice
+                            (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
+                            o.Type == itemType && 
+                            o.OrderedSymbol == symbolText);
+
+                        if (targetItem == null)
+                        {
+                            // Fallback: 僅比對商品、方向的第一筆已觸發項目
+                            targetItem = _obsCollection.FirstOrDefault(o => 
+                                o.IsTriggered &&
+                                string.IsNullOrEmpty(o.OrderNo) && 
+                                o.Type == itemType && 
+                                o.OrderedSymbol == symbolText);
+                        }
 
                         if (targetItem != null)
                         {
                             targetItem.OrderNo = orderNo;
-                            AppendLog($"【交易】成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {parsedPrice}");
+                            targetItem.TradeStatus = "Refocus";
+                            targetItem.TradeStatus = "委託中";
+                            AppendLog($"【自動交易】開倉成功！將委託書號 {orderNo} 綁定至：{targetItem.DisplayTitle} @ {parsedPrice}");
+                            StartOrderTimeoutMonitor(targetItem, orderNo);
+
+                            // 同步精確關聯快取狀態，以 A點價格與時間唯一鍵精確查找，忽略 ObsN 的可能微小差異，防止狀態覆蓋 Bug
+                            var successMatchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
+                                kv.Key.Price == targetItem.BestAPrice && 
+                                kv.Key.ATime == targetItem.BestATime);
+                            if (successMatchKeyVal.Key != default)
+                            {
+                                matchState = successMatchKeyVal.Value;
+                            }
                         }
                         else
                         {
-                            // 備用容錯比對：若回報價格與 BestAPrice 有微小差距（如滑價或整數轉換問題），只要方向與商品代碼吻合且已勾選未綁定，就進行綁定
-                            targetItem = _obsCollection.FirstOrDefault(o =>
-                                o.IsChecked &&
-                                string.IsNullOrEmpty(o.OrderNo) &&
-                                o.Type == itemType &&
-                                o.OrderedSymbol == symbolText);
+                            // 檢查是否為平倉成功 (TradeStatus == "平倉中")
+                            var closeItem = _obsCollection.FirstOrDefault(o => 
+                                string.IsNullOrEmpty(o.CloseOrderNo) && 
+                                o.OrderedSymbol == symbolText && 
+                                o.TradeStatus == "平倉中");
 
-                            if (targetItem != null)
+                            if (closeItem != null)
                             {
-                                targetItem.OrderNo = orderNo;
-                                AppendLog($"【交易】[容錯比對] 成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} (回報價: {parsedPrice})");
+                                closeItem.CloseOrderNo = orderNo;
+                                AppendLog($"【自動交易】平倉委託已受理！將平倉書號 {orderNo} 綁定至：{closeItem.DisplayTitle}");
+                            }
+                            else
+                            {
+                                // 暫存起來，待 UI DiffMerge 載入時配對
+                                lock (_unboundOrderReplies)
+                                {
+                                    _unboundOrderReplies[orderNo] = (parsedPrice, itemType, symbolText, "委託中");
+                                }
+                                AppendLog($"【自動交易】[快取回報] 暫時找不到相符極值列，已將書號 {orderNo} 加入待綁定快取。");
+                            }
+                        }
+
+                        if (matchState != null)
+                        {
+                            if (matchState.TradeStatus == "已送出")
+                            {
+                                matchState.OrderNo = orderNo;
+                                matchState.TradeStatus = "委託中";
+                            }
+                            else if (matchState.TradeStatus == "平倉中")
+                            {
+                                matchState.CloseOrderNo = orderNo;
                             }
                         }
                     }
-
-                    // 若狀態為成交，自動延遲 500ms 查詢最新庫存，更新當前庫存欄位
-                    if (Ts_Code == "06" || Ts_Code == "08" || statusText.Contains("成交"))
+                    else if (Ts_Code == "06" || Ts_Code == "08" || statusText.Contains("成交")) // 全部成交/成交
                     {
+                        // 優先尋找開倉成交項目
+                        var targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                        if (targetItem != null)
+                        {
+                            targetItem.TradeStatus = "Refocus";
+                            targetItem.TradeStatus = "已成交";
+                            targetItem.StopLossDisplay = targetItem.StopLossPrice.ToString(); // 成交持倉中，顯示純數字停損價
+                            AppendLog($"【自動交易】開倉單全部成交！書號: {orderNo} @ {parsedPrice} 啟動持倉停損停利監控。");
+                        }
+                        else
+                        {
+                            // 尋找平倉成交項目
+                            var closeItem = _obsCollection.FirstOrDefault(o => o.CloseOrderNo == orderNo);
+                            if (closeItem == null)
+                            {
+                                // 容錯：若平倉書號未及綁定，直接比對處於平倉中的項目
+                                string oppType = itemType == "做多" ? "做空" : "做多"; // 平倉方向相反
+                                closeItem = _obsCollection.FirstOrDefault(o => 
+                                    o.OrderedSymbol == symbolText && 
+                                    o.Type == oppType && 
+                                    o.TradeStatus == "平倉中");
+                            }
+
+                            if (closeItem != null)
+                            {
+                                closeItem.TradeStatus = "已平倉";
+                                AppendLog($"【自動交易】平倉單全部成交！書號: {orderNo}。交易完整結束。");
+                            }
+                            else
+                            {
+                                // 可能是開倉成交但 DiffMerge 還沒完成，先放入快取
+                                lock (_unboundOrderReplies)
+                                {
+                                    _unboundOrderReplies[orderNo] = (parsedPrice, itemType, symbolText, "已成交");
+                                }
+                                AppendLog($"【自動交易】[快取成交] 暫時找不到書號 {orderNo}，已加入待成交快取。");
+                            }
+                        }
+
+                        if (matchState != null)
+                        {
+                            if (matchState.TradeStatus == "委託中" || matchState.TradeStatus == "已送出")
+                            {
+                                matchState.TradeStatus = "Refocus";
+                                matchState.TradeStatus = "Spacer";
+                                matchState.TradeStatus = "已成交";
+                                matchState.StopLossDisplay = matchState.StopLossPrice.ToString(); // 成交持倉中，顯示純數字停損價
+                            }
+                            else if (matchState.TradeStatus == "平倉中")
+                            {
+                                matchState.TradeStatus = "已平倉";
+                            }
+                        }
+
+                        // 成交後延遲 500ms 刷新庫存部位
                         DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(500));
                     }
                 }
@@ -5890,7 +6112,254 @@ namespace ExtremeSignalAppCS
             // 延遲 600ms 發送庫存查詢，避免平行併發衝突
             DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(600));
         }
+
+        // === 自動交易事件處理與核心方法 ===
+
+        private void ChkAutoTradeBuy_Changed(object sender, RoutedEventArgs e)
+        {
+            _isAutoTradeBuyEnabled = chkAutoTradeBuy.IsChecked == true;
+            if (_isAutoTradeBuyEnabled)
+            {
+                _isBuyLocked = false; // 解除做多鎖定，允許下一筆新信號進場
+                _lastBuyStopLossPrice = 0; // 重置前次停損價記錄
+                AppendLog("【自動交易】已啟用自動「做多」下單監控（已重置鎖定狀態）。");
+            }
+            else
+            {
+                AppendLog("【自動交易】已關閉自動「做多」下單監控。");
+            }
+        }
+
+        private void ChkAutoTradeSell_Changed(object sender, RoutedEventArgs e)
+        {
+            _isAutoTradeSellEnabled = chkAutoTradeSell.IsChecked == true;
+            if (_isAutoTradeSellEnabled)
+            {
+                _isSellLocked = false; // 解除做空鎖定，允許下一筆新信號進場
+                _lastSellStopLossPrice = 0; // 重置前次停損價記錄
+                AppendLog("【自動交易】已啟用自動「做空」下單監控（已重置鎖定狀態）。");
+            }
+            else
+            {
+                AppendLog("【自動交易】已關閉自動「做空」下單監控。");
+            }
+        }
+
+        private void RbTX_Changed(object sender, RoutedEventArgs e)
+        {
+            _isTxfSelected = rbTX.IsChecked == true;
+        }
+
+        private void ProcessBackgroundAutoTrade(SimulationResult item)
+        {
+            // 1. 檢查方向
+            bool isAutoBuy = _isAutoTradeBuyEnabled;
+            bool isAutoSell = _isAutoTradeSellEnabled;
+
+            if (!isAutoBuy && !isAutoSell)
+            {
+                item.TradeStatus = "未啟用下單";
+                return;
+            }
+
+            bool directionMatch = false;
+            if (isAutoSell && item.Type == "做空") directionMatch = true;
+            if (isAutoBuy && item.Type == "做多") directionMatch = true;
+
+            if (!directionMatch)
+            {
+                item.TradeStatus = "方向不符 (不再下單)";
+                return;
+            }
+
+            // 先解析 TrigPrice 與計算停損價，以便在鎖定檢查時比對一致性
+            if (!double.TryParse(item.TrigPrice, out double trigPriceVal))
+            {
+                item.TradeStatus = "無效觸發價 (不再下單)";
+                return;
+            }
+            int trigPrice = (int)Math.Round(trigPriceVal);
+            int bestAPrice = item.BestAPrice;
+
+            int stopLoss = 0;
+            int takeProfit = 0;
+
+            if (item.Type == "做空")
+            {
+                stopLoss = bestAPrice + 1; // A點價的上一個 (比A點高1點)
+                int profitDiff = bestAPrice - trigPrice + 3; // A點價減去B觸發價，再加上3點成本
+                takeProfit = trigPrice - profitDiff;
+            }
+            else // 做多
+            {
+                stopLoss = bestAPrice - 1; // A點價的下一個 (比A點低1點)
+                int profitDiff = trigPrice - bestAPrice + 3; // B觸發價減去A點價，再加上3點成本
+                takeProfit = trigPrice + profitDiff;
+            }
+
+            item.StopLossPrice = stopLoss;
+            item.StopLossDisplay = stopLoss.ToString(); // 無論什麼狀態都顯示停損價數值
+            item.TakeProfitPrice = takeProfit;
+
+            // 1.5 檢查多空鎖定 (只做第一筆交易) - 加入停損價一致性檢查
+            if (item.Type == "做多")
+            {
+                if (_isBuyLocked)
+                {
+                    // 若當前訊號之停損價與上一次下單時不同，則視為不同波段訊號，自動解除做多鎖定
+                    if (stopLoss != _lastBuyStopLossPrice)
+                    {
+                        _isBuyLocked = false;
+                        AppendLog($"【自動交易】偵測到做多停損價改變 ({_lastBuyStopLossPrice} -> {stopLoss})，解除做多鎖定並重新進場。");
+                    }
+                    else
+                    {
+                        item.TradeStatus = "已鎖定 (只做第一筆)";
+                        // 同步更新快取狀態，以免 UI DiffMerge 時狀態丟失
+                        var cKey = item.ConfirmedKey;
+                        var cachedState = _autoTradeStates.GetOrAdd(cKey, k => new AutoTradeState());
+                        cachedState.TradeStatus = "已鎖定 (只做第一筆)";
+                        return;
+                    }
+                }
+            }
+            else if (item.Type == "做空")
+            {
+                if (_isSellLocked)
+                {
+                    // 若當前訊號之停損價與上一次下單時不同，則視為不同波段訊號，自動解除做空鎖定
+                    if (stopLoss != _lastSellStopLossPrice)
+                    {
+                        _isSellLocked = false;
+                        AppendLog($"【自動交易】偵測到做空停損價改變 ({_lastSellStopLossPrice} -> {stopLoss})，解除做空鎖定並重新進場。");
+                    }
+                    else
+                    {
+                        item.TradeStatus = "Refocus";
+                        item.TradeStatus = "已鎖定 (只做第一筆)";
+                        // 同步更新快取狀態
+                        var cKey = item.ConfirmedKey;
+                        var cachedState = _autoTradeStates.GetOrAdd(cKey, k => new AutoTradeState());
+                        cachedState.TradeStatus = "Refocus";
+                        cachedState.TradeStatus = "已鎖定 (只做第一筆)";
+                        return;
+                    }
+                }
+            }
+
+            // 2. 檢查 API 連線與帳務登入
+            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+            {
+                item.TradeStatus = "未登入 API (不再下單)";
+                AppendLog($"【自動交易】自動下單失敗：元大交易 API 未登入。項目: {item.DisplayTitle}");
+                return;
+            }
+
+            // 5. 下單商品與方向
+            string buys = item.Type == "做多" ? "B" : "S";
+            string priceStr = trigPrice.ToString();
+            string qtyStr = "1";
+
+            string baseSym = _isTxfSelected ? "TXF" : "MXF";
+            string monthCode = _engine.GetMonthCode();
+            string symbol = baseSym + monthCode;
+            item.OrderedSymbol = symbol;
+            item.IsTriggered = true;
+
+            // 啟用互鎖與方向解鎖，並記錄當前停損價
+            if (item.Type == "做多")
+            {
+                _isBuyLocked = true;
+                _lastBuyStopLossPrice = stopLoss;
+                _isSellLocked = false; // 解鎖做空
+                AppendLog($"【自動交易】已觸發自動做多下單，鎖定做多監控 (停損價: {stopLoss})，並自動解鎖做空。");
+            }
+            else if (item.Type == "做空")
+            {
+                _isSellLocked = true;
+                _lastSellStopLossPrice = stopLoss;
+                _isBuyLocked = false; // 解鎖做多
+                AppendLog($"【自動交易】已觸發自動做空下單，鎖定做空監控 (停損價: {stopLoss})，並自動解鎖做多。");
+            }
+
+            // 同步寫入快取
+            var key = item.ConfirmedKey;
+            var state = _autoTradeStates.GetOrAdd(key, k => new AutoTradeState());
+            state.StopLossPrice = stopLoss;
+            state.StopLossDisplay = stopLoss.ToString(); // 無論什麼狀態都顯示停損價數值
+            state.TakeProfitPrice = takeProfit;
+            state.OrderedSymbol = symbol;
+            state.IsTriggered = true;
+            state.TradeStatus = "Refocus";
+            state.TradeStatus = "Spacer";
+            state.TradeStatus = "已送出";
+
+            // 同步寫入 UI 物件，消除非同步 DiffMerge 延遲，防止秒速退單回報找不到 "已送出" 項目
+            item.TradeStatus = "已送出";
+            item.StopLossPrice = stopLoss;
+            item.StopLossDisplay = stopLoss.ToString();
+            item.TakeProfitPrice = takeProfit;
+
+            AppendLog($"【自動交易】記憶體瞬間產生極值！送出限價單！商品: {symbol} 方向: {(buys == "B" ? "買進" : "賣出")} 1口 @ {priceStr}，停損: {stopLoss}，停利: {takeProfit}");
+
+            // 呼叫 API 送出新單委託 (FCode="01", CommodityType="0", ROD="R", Limit="L")
+            string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, symbol, priceStr, qtyStr, "0", "L", "R", "", "");
+            string[] retParts = ret.Split('|');
+            if (retParts.Length > 0)
+            {
+                string oseqNo = retParts[0].Trim();
+                item.OseqNo = oseqNo;
+                state.OseqNo = oseqNo;
+            }
+            AppendLog($"【自動交易】元大 API 下單回傳結果: {ret}");
+
+            // 先設為已送出，等待 OnOrdRptF 收到委託成功 (04) 以綁定書號
+            item.TradeStatus = "已送出";
+        }
+
+        private async void StartOrderTimeoutMonitor(SimulationResult item, string orderNo)
+        {
+            await Task.Delay(3000);
+            Dispatcher.Invoke(() =>
+            {
+                var key = item.ConfirmedKey;
+                if (_autoTradeStates.TryGetValue(key, out var state))
+                {
+                    if (state.OrderNo == orderNo && state.TradeStatus == "委託中")
+                    {
+                        AppendLog($"【自動交易】委託書號 {orderNo} 超過 3 秒未成交，執行自動撤單！");
+                        if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
+                        {
+                            string buys = item.Type == "做多" ? "B" : "S";
+                            string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", orderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
+                            AppendLog($"【自動交易】元大 API 撤單結果: {ret}");
+                        }
+                        state.TradeStatus = "逾時取消 (不再下單)";
+                        item.TradeStatus = "逾時取消 (不再下單)";
+                    }
+                }
+            });
+        }
     }
+
+    /// <summary>
+    /// 自動交易背景狀態保存結構
+    /// </summary>
+    public class AutoTradeState
+    {
+        public string TradeStatus { get; set; } = "未啟用下單";
+        public int TakeProfitPrice { get; set; } = 0;
+        public string? OrderedSymbol { get; set; } = null;
+        public bool IsTriggered { get; set; } = false;
+        public string? OseqNo { get; set; } = null;
+        public string? CloseOseqNo { get; set; } = null;
+        public string? OrderNo { get; set; } = null;
+        public string? CloseOrderNo { get; set; } = null;
+        public int StopLossPrice { get; set; } = 0;
+        public string? StopLossDisplay { get; set; } = null;
+    }
+
+
 
     /// <summary>
     /// DispatcherTimer 輔助擴充方法，簡化 Timer 撰寫。
