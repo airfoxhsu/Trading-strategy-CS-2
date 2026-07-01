@@ -1796,13 +1796,13 @@ namespace ExtremeSignalAppCS
                             }
                         }
 
-                        // 規則 2: N 數值一定要大於 10 (暫時放寬為大於0，測試用)
-                        if (item.ObsN <= 0)
+                        // 規則 2: N 數值一定要大於 10 tick 才能進場下單
+                        if (item.ObsN <= 10)
                         {
                             if (item.TradeStatus == "未啟用下單")
                             {
-                                item.TradeStatus = "N<=10 (不再下單)";
-                                state.TradeStatus = "N<=10 (不再下單)";
+                                item.TradeStatus = "N<=10 (不下單)";
+                                state.TradeStatus = "N<=10 (不下單)";
                             }
                             continue;
                         }
@@ -2258,6 +2258,9 @@ namespace ExtremeSignalAppCS
                 t.OrderedSymbol = s.OrderedSymbol;
                 t.IsTriggered = s.IsTriggered;
                 t.CloseOrderNo = s.CloseOrderNo;
+                t.OseqNo = s.OseqNo;
+                t.CloseOseqNo = s.CloseOseqNo;
+                t.OrderNo = s.OrderNo;
             });
 
             // 處理在背景下單時非同步回報的 OrderNo 綁定 (解決競態問題)
@@ -2592,6 +2595,16 @@ namespace ExtremeSignalAppCS
 
                     // 呼叫 API 送出平倉委託，使用市價 (PriType="M")，IOC (OrdCond="I")
                     string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, item.OrderedSymbol, "0", "1", "0", "M", "I", "", "");
+                    string[] retParts = ret.Split('|');
+                    if (retParts.Length > 0)
+                    {
+                        string closeOseqNo = retParts[0].Trim();
+                        item.CloseOseqNo = closeOseqNo;
+                        if (state != null)
+                        {
+                            state.CloseOseqNo = closeOseqNo;
+                        }
+                    }
                     AppendLog($"【自動交易】元大 API 平倉回傳結果: {ret}");
                 }
             }
@@ -5805,6 +5818,18 @@ namespace ExtremeSignalAppCS
             }));
         }
 
+        private static bool CompareOrderNo(string? a, string? b)
+        {
+            if (a == null || b == null) return false;
+            return string.Equals(a.Replace("\0", "").Trim(), b.Replace("\0", "").Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool CompareTime(string? a, string? b)
+        {
+            if (a == null || b == null) return false;
+            return string.Equals(a.Replace(":", "").Trim(), b.Replace(":", "").Trim());
+        }
+
         /// <summary>
         /// 處理元大下單 API 自動委託回報事件。
         /// </summary>
@@ -5849,11 +5874,11 @@ namespace ExtremeSignalAppCS
 
                 AppendLog($"【自動交易】收到委託回報：{bsText} {symbolText} {qtyText}口 @ {priceText} 書號: {orderNo}，狀態: {statusText}");
 
-                // 嘗試從自動交易快取字典中找到 match 的項目 (優先使用流水號 OseqNo)
+                // 嘗試從自動交易快取字典中找到 match 的項目 (優先使用流水號 OseqNo，並防空字元與大小寫問題)
                 AutoTradeState? matchState = null;
                 var matchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
-                    (!string.IsNullOrEmpty(oseqNo) && (kv.Value.OseqNo == oseqNo || kv.Value.CloseOseqNo == oseqNo)) ||
-                    (string.IsNullOrEmpty(oseqNo) && !string.IsNullOrEmpty(orderNo) && (kv.Value.OrderNo == orderNo || kv.Value.CloseOrderNo == orderNo))
+                    (!string.IsNullOrEmpty(oseqNo) && (CompareOrderNo(kv.Value.OseqNo, oseqNo) || CompareOrderNo(kv.Value.CloseOseqNo, oseqNo))) ||
+                    (string.IsNullOrEmpty(oseqNo) && !string.IsNullOrEmpty(orderNo) && (CompareOrderNo(kv.Value.OrderNo, orderNo) || CompareOrderNo(kv.Value.CloseOrderNo, orderNo)))
                 );
                 
                 // 如果流水號和書號都找不到，才使用模糊配對 (防備用)
@@ -5880,39 +5905,50 @@ namespace ExtremeSignalAppCS
                 {
                     // 1. 處理失敗或取消
                     SimulationResult? targetItem = null;
-                    if (!string.IsNullOrEmpty(oseqNo))
+
+                    if (matchKeyVal.Key != default)
                     {
-                        targetItem = _obsCollection.FirstOrDefault(o => o.OseqNo == oseqNo || o.CloseOseqNo == oseqNo);
+                        // 既然有精確快取配對，就只允許精確以 A 點時間與價格尋找對應 UI 列，避免高頻交易下 UI 尚未新增新列而錯誤匹配 fallback 舊列
+                        string targetATime = matchKeyVal.Key.ATime;
+                        int targetAPrice = matchKeyVal.Key.Price;
+                        targetItem = _obsCollection.FirstOrDefault(o => CompareTime(o.BestATime, targetATime) && o.BestAPrice == targetAPrice);
                     }
-                    if (targetItem == null && !string.IsNullOrEmpty(orderNo))
+                    else
                     {
-                        targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo || o.CloseOrderNo == orderNo);
+                        // 只有當快取都沒有匹配時，才進行備用的模糊與 fallback 搜尋（孤兒回報防備）
+                        if (!string.IsNullOrEmpty(oseqNo))
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => CompareOrderNo(o.OseqNo, oseqNo) || CompareOrderNo(o.CloseOseqNo, oseqNo));
+                        }
+                        if (targetItem == null && !string.IsNullOrEmpty(orderNo))
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => CompareOrderNo(o.OrderNo, orderNo) || CompareOrderNo(o.CloseOrderNo, orderNo));
+                        }
+
+                        if (targetItem == null)
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => 
+                                o.IsTriggered &&
+                                (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
+                                o.Type == itemType &&
+                                o.OrderedSymbol == symbolText);
+                        }
+
+                        if (targetItem == null)
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => 
+                                o.IsTriggered &&
+                                o.Type == itemType &&
+                                o.OrderedSymbol == symbolText);
+                        }
                     }
 
-                    if (targetItem == null)
-                    {
-                        targetItem = _obsCollection.FirstOrDefault(o => 
-                            o.IsTriggered &&
-                            (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
-                            o.Type == itemType &&
-                            o.OrderedSymbol == symbolText); // 移除 TradeStatus 限制，改用 IsTriggered，防範競態條件
-                    }
-
-                    if (targetItem == null)
-                    {
-                        // Fallback: 僅比對商品、方向的第一筆下單項目（不限價格，防 API 價格回傳 0）
-                        targetItem = _obsCollection.FirstOrDefault(o => 
-                            o.IsTriggered &&
-                            o.Type == itemType &&
-                            o.OrderedSymbol == symbolText);
-                    }
-
-                    // 若精確定位到 targetItem，則以 A點價格與時間唯一鍵精確關聯快取狀態，忽略 ObsN 的可能微小差異，防止狀態覆蓋 Bug
-                    if (targetItem != null)
+                    // 只有當原本沒有配對到快取，且成功匹配到 targetItem 時，才以 A點價格與時間反向關聯快取狀態，防範覆蓋正確的 matchState
+                    if (matchState == null && targetItem != null)
                     {
                         var failMatchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
                             kv.Key.Price == targetItem.BestAPrice && 
-                            kv.Key.ATime == targetItem.BestATime);
+                            CompareTime(kv.Key.ATime, targetItem.BestATime));
                         if (failMatchKeyVal.Key != default)
                         {
                             matchState = failMatchKeyVal.Value;
@@ -5964,22 +6000,35 @@ namespace ExtremeSignalAppCS
                     if (Ts_Code == "04") // 委託成功
                     {
                         // 尋找開倉或平倉匹配項目
-                        var targetItem = _obsCollection.FirstOrDefault(o => 
-                            o.IsTriggered &&
-                            string.IsNullOrEmpty(o.OrderNo) && 
-                            // 修正：比對下單價格，應使用 TrigPrice 進場價而非 BestAPrice
-                            (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
-                            o.Type == itemType && 
-                            o.OrderedSymbol == symbolText);
+                        SimulationResult? targetItem = null;
 
-                        if (targetItem == null)
+                        if (matchKeyVal.Key != default)
                         {
-                            // Fallback: 僅比對商品、方向的第一筆已觸發項目
+                            // 既然有精確快取配對，就只允許精確以 A 點時間與價格尋找對應 UI 列，避免高頻交易下 UI 尚未新增新列而錯誤匹配 fallback 舊列
+                            string targetATime = matchKeyVal.Key.ATime;
+                            int targetAPrice = matchKeyVal.Key.Price;
+                            targetItem = _obsCollection.FirstOrDefault(o => CompareTime(o.BestATime, targetATime) && o.BestAPrice == targetAPrice);
+                        }
+                        else
+                        {
+                            // 只有當快取都沒有匹配時，才進行備用的模糊與 fallback 搜尋（孤兒回報防備）
                             targetItem = _obsCollection.FirstOrDefault(o => 
                                 o.IsTriggered &&
                                 string.IsNullOrEmpty(o.OrderNo) && 
+                                // 修正：比對下單價格，應使用 TrigPrice 進場價而非 BestAPrice
+                                (double.TryParse(o.TrigPrice, out var oTrig) && (int)Math.Round(oTrig) == parsedPrice) &&
                                 o.Type == itemType && 
                                 o.OrderedSymbol == symbolText);
+
+                            if (targetItem == null)
+                            {
+                                // Fallback: 僅比對商品、方向的第一筆已觸發項目
+                                targetItem = _obsCollection.FirstOrDefault(o => 
+                                    o.IsTriggered &&
+                                    string.IsNullOrEmpty(o.OrderNo) && 
+                                    o.Type == itemType && 
+                                    o.OrderedSymbol == symbolText);
+                            }
                         }
 
                         if (targetItem != null)
@@ -5990,13 +6039,16 @@ namespace ExtremeSignalAppCS
                             AppendLog($"【自動交易】開倉成功！將委託書號 {orderNo} 綁定至：{targetItem.DisplayTitle} @ {parsedPrice}");
                             StartOrderTimeoutMonitor(targetItem, orderNo);
 
-                            // 同步精確關聯快取狀態，以 A點價格與時間唯一鍵精確查找，忽略 ObsN 的可能微小差異，防止狀態覆蓋 Bug
-                            var successMatchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
-                                kv.Key.Price == targetItem.BestAPrice && 
-                                kv.Key.ATime == targetItem.BestATime);
-                            if (successMatchKeyVal.Key != default)
+                            // 只有當原本沒有配對到快取，且成功匹配到 targetItem 時，才以 A點價格與時間反向關聯快取狀態，防範覆蓋正確的 matchState
+                            if (matchState == null)
                             {
-                                matchState = successMatchKeyVal.Value;
+                                var successMatchKeyVal = _autoTradeStates.FirstOrDefault(kv => 
+                                    kv.Key.Price == targetItem.BestAPrice && 
+                                    CompareTime(kv.Key.ATime, targetItem.BestATime));
+                                if (successMatchKeyVal.Key != default)
+                                {
+                                    matchState = successMatchKeyVal.Value;
+                                }
                             }
                         }
                         else
@@ -6201,14 +6253,14 @@ namespace ExtremeSignalAppCS
 
             if (!directionMatch)
             {
-                item.TradeStatus = "方向不符 (不再下單)";
+                item.TradeStatus = "方向不符 (不下單)";
                 return;
             }
 
             // 先解析 TrigPrice 與計算停損價，以便在鎖定檢查時比對一致性
             if (!double.TryParse(item.TrigPrice, out double trigPriceVal))
             {
-                item.TradeStatus = "無效觸發價 (不再下單)";
+                item.TradeStatus = "無效觸發價 (不下單)";
                 return;
             }
             int trigPrice = (int)Math.Round(trigPriceVal);
@@ -6283,7 +6335,7 @@ namespace ExtremeSignalAppCS
             // 2. 檢查 API 連線與帳務登入
             if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
             {
-                item.TradeStatus = "未登入 API (不再下單)";
+                item.TradeStatus = "未登入 API (不下單)";
                 AppendLog($"【自動交易】自動下單失敗：元大交易 API 未登入。項目: {item.DisplayTitle}");
                 return;
             }
@@ -6367,8 +6419,8 @@ namespace ExtremeSignalAppCS
                             string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", orderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
                             AppendLog($"【自動交易】元大 API 撤單結果: {ret}");
                         }
-                        state.TradeStatus = "逾時取消 (不再下單)";
-                        item.TradeStatus = "逾時取消 (不再下單)";
+                        state.TradeStatus = "逾時取消 (不下單)";
+                        item.TradeStatus = "逾時取消 (不下單)";
                     }
                 }
             });
