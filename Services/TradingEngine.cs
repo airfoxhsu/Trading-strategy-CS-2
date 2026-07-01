@@ -1310,7 +1310,7 @@ namespace ExtremeSignalAppCS.Services
                     if (currentMode != "做空")
                     {
                         currentMode = "做空";
-                        lockedSL = raw.PrevHigh; // 做空防守
+                        lockedSL = stopLoss; // 做空防守：使用停損價欄位
                     }
                 }
                 else if (sigType == "做多")
@@ -1318,7 +1318,7 @@ namespace ExtremeSignalAppCS.Services
                     if (currentMode != "做多")
                     {
                         currentMode = "做多";
-                        lockedSL = raw.PrevLow; // 做多防守
+                        lockedSL = stopLoss; // 做多防守：使用停損價欄位
                     }
                 }
 
@@ -1342,7 +1342,7 @@ namespace ExtremeSignalAppCS.Services
                     {
                         for (int i = bIdx; i < greedyEnd; i++)
                         {
-                            if (trades[i].Price > lockedSL.Value)
+                            if (trades[i].Price >= lockedSL.Value + 1) // 停損放停損價高一檔時觸發
                             {
                                 if (i < chronoEnd && !isBrokenChrono)
                                     isBrokenChrono = true;
@@ -1362,7 +1362,7 @@ namespace ExtremeSignalAppCS.Services
                     {
                         for (int i = bIdx; i < greedyEnd; i++)
                         {
-                            if (trades[i].Price < lockedSL.Value)
+                            if (trades[i].Price <= lockedSL.Value - 1) // 停損放停損價低一檔時觸發
                             {
                                 if (i < chronoEnd && !isBrokenChrono)
                                     isBrokenChrono = true;

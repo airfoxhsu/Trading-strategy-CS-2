@@ -10,6 +10,14 @@ namespace ExtremeSignalAppCS.Models
     /// 參考 QuantConnect/Lean 架構，避免了任何 OS 鎖以及 GC Allocation。
     /// 適用於高頻 Tick 資料流（如每秒 10,000+ Ticks）的極限場景。
     /// </summary>
+    /// <remarks>
+    /// <para><b>執行緒安全契約：</b></para>
+    /// <list type="bullet">
+    ///   <item><description><c>Add()</c>：多執行緒並行呼叫安全 (Lock-Free)。</description></item>
+    ///   <item><description><c>this[index]</c>、<c>Count</c>：多執行緒讀取安全 (Lock-Free)。</description></item>
+    ///   <item><description><c>Clear()</c>：可與並行的 <c>Add()</c> 安全共存。內部透過世代計數器 (Generation Counter) 通知正在 SpinWait 的 <c>Add()</c> 提前放棄，避免死鎖。</description></item>
+    /// </list>
+    /// </remarks>
     /// <typeparam name="T">元素型別，建議為 struct 以達成零 GC 分配</typeparam>
     public class ConcurrentAppendOnlyList<T> : IReadOnlyList<T>
     {
@@ -24,6 +32,9 @@ namespace ExtremeSignalAppCS.Models
         
         // 分離寫入指標與確認指標，確保高頻狀態下讀取不會遇到尚未寫入的 default 值
         private int _writeIndex = 0;
+        
+        // 世代計數器：每次 Clear() 時遞增，使正在 SpinWait 的 Add() 偵測到清空事件並安全放棄
+        private int _generation = 0;
 
         /// <summary>
         /// 獲取目前集合中的元素總數。
@@ -50,9 +61,13 @@ namespace ExtremeSignalAppCS.Models
         /// <summary>
         /// 新增元素至集合末端。
         /// 完全無鎖 (Lock-Free)，透過 Interlocked 進行原子增量。
+        /// 若在 SpinWait 期間偵測到 <see cref="Clear"/> 被呼叫（世代變更），則安全放棄本次寫入。
         /// </summary>
         public void Add(T item)
         {
+            // 0. 快照當前世代，用於偵測 Clear() 是否在 Add() 途中被呼叫
+            int gen = Volatile.Read(ref _generation);
+
             // 1. 原子取得當前要寫入的索引
             int index = Interlocked.Increment(ref _writeIndex) - 1;
             int blockIndex = index / BlockSize;
@@ -75,9 +90,14 @@ namespace ExtremeSignalAppCS.Models
             var spinWait = new SpinWait();
             while (Volatile.Read(ref _count) != index)
             {
+                // 世代已變更 = 被 Clear() 了，放棄本次寫入以避免永久自旋死鎖
+                if (Volatile.Read(ref _generation) != gen) return;
                 spinWait.SpinOnce();
             }
             
+            // 最終世代確認：防止在 _count 恰好等於 index 的瞬間被 Clear() 歸零後錯誤推進
+            if (Volatile.Read(ref _generation) != gen) return;
+
             // 將 _count 推進，標記為安全可讀取 (Memory Barrier 效果)
             Volatile.Write(ref _count, index + 1);
         }
@@ -96,10 +116,14 @@ namespace ExtremeSignalAppCS.Models
         /// <summary>
         /// 高效清空集合（直接將計數器歸零，重用已配置的底層陣列）。
         /// 徹底避免重新配置陣列的記憶體與 GC 消耗 (Zero Allocation)。
+        /// 先遞增世代計數器，通知所有正在 SpinWait 的 <see cref="Add"/> 安全放棄，再歸零指標。
         /// </summary>
         public void Clear()
         {
-            // 將指標歸零即可。舊資料會在新資料寫入時被覆蓋。
+            // 1. 遞增世代：通知所有正在 SpinWait 的 Add() 偵測到清空並安全放棄
+            Interlocked.Increment(ref _generation);
+            
+            // 2. 歸零寫入指標與計數器。舊資料會在新資料寫入時被覆蓋。
             Volatile.Write(ref _writeIndex, 0);
             Volatile.Write(ref _count, 0);
         }

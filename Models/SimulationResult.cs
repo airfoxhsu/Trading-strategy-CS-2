@@ -40,6 +40,7 @@ namespace ExtremeSignalAppCS.Models
         private string? _orderNo;
         private string? _orderedSymbol;
         private bool _isTriggered;
+        private bool _isFilled;
 
         /// <summary>
         /// 顯示標籤 (如 "N=25 抓新高反轉")
@@ -218,6 +219,11 @@ namespace ExtremeSignalAppCS.Models
         /// 記錄此列是否已觸發觸價下單。
         /// </summary>
         public bool IsTriggered { get => _isTriggered; set => SetField(ref _isTriggered, value); }
+
+        /// <summary>
+        /// 記錄此列建倉單是否已成交。
+        /// </summary>
+        public bool IsFilled { get => _isFilled; set => SetField(ref _isFilled, value); }
 
         /// <summary>
         /// 建立空的 SimulationResult。

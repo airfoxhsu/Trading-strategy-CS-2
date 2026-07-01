@@ -75,6 +75,10 @@ namespace ExtremeSignalAppCS
 
         private readonly System.Threading.Lock _rtLock = new(); // C# 13 新型執行緒同步安全鎖
 
+        // 背景行情監控清單與鎖
+        private readonly List<ActiveWatchItem> _activeWatchList = new();
+        private readonly object _watchListLock = new();
+
         // 靜態編譯期 Regex 產生器
         [System.Text.RegularExpressions.GeneratedRegex(@"Symbol=([^, \t\r\n]+)")]
         private static partial System.Text.RegularExpressions.Regex SymbolRegex();
@@ -1069,6 +1073,10 @@ namespace ExtremeSignalAppCS
                 {
                     string monthCode = _engine.GetMonthCode();
                     string completeSymbol = baseSymbol + monthCode;
+
+                    // 行情執行緒最優先即時下單與停損監控
+                    ProcessRealtimeWatchList(completeSymbol, price);
+
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         CheckAndTriggerTouchOrders(completeSymbol, price);
@@ -2206,26 +2214,13 @@ namespace ExtremeSignalAppCS
         /// </summary>
         private void RecalculateObserverCheckableStates()
         {
-            // 1. 計算大勢順勢方向指標 (排除歷史 history 與註解 annotation 項目)
-            var validItems = _obsCollection.Where(o => o.Type != null && !o.Tags.Contains("history") && !o.Tags.Contains("annotation")).ToList();
-            int totalShortCount = validItems.Count(o => o.Type == "做空");
-            int totalLongCount = validItems.Count(o => o.Type == "做多");
-            int unbrokenShortCount = validItems.Count(o => o.Type == "做空" && !o.IsBroken && (o.StopLossDisplay == null || !o.StopLossDisplay.Contains("已破")));
-            int unbrokenLongCount = validItems.Count(o => o.Type == "做多" && !o.IsBroken && (o.StopLossDisplay == null || !o.StopLossDisplay.Contains("已破")));
-
-            string totalTrend = totalShortCount > totalLongCount ? "Short" : (totalLongCount > totalShortCount ? "Long" : "Neutral");
-            string unbrokenTrend = unbrokenShortCount > unbrokenLongCount ? "Short" : (unbrokenLongCount > unbrokenShortCount ? "Long" : "Neutral");
-
-            bool forceDisableLong = totalTrend == "Short" && unbrokenTrend == "Short";
-            bool forceDisableShort = totalTrend == "Long" && unbrokenTrend == "Long";
-
-            // 2. 遍歷並設定每一列的可用性
+            // 遍歷並設定每一列的可用性
             int count = _obsCollection.Count;
             for (int i = 0; i < count; i++)
             {
                 var current = _obsCollection[i];
                 
-                // 基礎判定邏輯 (原版)
+                // 基礎判定邏輯：只要未破且類型正確即為可用
                 bool baseCheckable = true;
                 if (current.IsBroken)
                 {
@@ -2236,23 +2231,39 @@ namespace ExtremeSignalAppCS
                         if (latestPrice.HasValue)
                         {
                             bool isTrigger = false;
-                            if (current.Type == "做空" && latestPrice.Value >= current.BestAPrice)
+                            if (int.TryParse(current.TrigPrice, out int trigPrice))
                             {
-                                isTrigger = true;
-                            }
-                            else if (current.Type == "做多" && latestPrice.Value <= current.BestAPrice)
-                            {
-                                isTrigger = true;
+                                lock (_watchListLock)
+                                {
+                                    var watchItem = _activeWatchList.FirstOrDefault(x => x.Key == current.ConfirmedKey);
+                                    // 只有當該監控項目在背景尚未觸發下單時，才允許此處觸發攔截
+                                    if (watchItem != null && !watchItem.IsTriggered)
+                                    {
+                                        if (current.Type == "做空" && latestPrice.Value >= trigPrice)
+                                        {
+                                            isTrigger = true;
+                                        }
+                                        else if (current.Type == "做多" && latestPrice.Value <= trigPrice)
+                                        {
+                                            isTrigger = true;
+                                        }
+
+                                        if (isTrigger)
+                                        {
+                                            watchItem.IsTriggered = true; // 同步標記背景清單
+                                        }
+                                    }
+                                }
                             }
 
                             if (isTrigger)
                             {
                                 current.IsTriggered = true; // 標記為已觸發
                                 string buys = current.Type == "做多" ? "B" : "S";
-                                string price = current.BestAPrice.ToString();
+                                string price = current.TrigPrice;
                                 string qty = "1";
 
-                                AppendLog($"【交易】價格來到 A 點價且判定已破，優先執行下單！商品: {current.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {latestPrice.Value})");
+                                AppendLog($"【交易】價格來到觸發價且判定已破，優先執行下單！商品: {current.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {latestPrice.Value})");
 
                                 if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
                                 {
@@ -2274,31 +2285,7 @@ namespace ExtremeSignalAppCS
                 }
                 else
                 {
-                    bool hasActiveOpposite = false;
-                    string oppositeType = current.Type == "做多" ? "做空" : "做多";
-                    for (int j = i + 1; j < count; j++)
-                    {
-                        var next = _obsCollection[j];
-                        if (next.Type == oppositeType && !next.IsBroken)
-                        {
-                            hasActiveOpposite = true;
-                            break;
-                        }
-                    }
-                    baseCheckable = !hasActiveOpposite;
-                }
-
-                // 套用大勢過濾限制
-                if (baseCheckable)
-                {
-                    if (forceDisableLong && current.Type == "做多")
-                    {
-                        baseCheckable = false;
-                    }
-                    else if (forceDisableShort && current.Type == "做空")
-                    {
-                        baseCheckable = false;
-                    }
+                    baseCheckable = true;
                 }
 
                 // 寫入可用性，若導致已勾選的單子被取消，則使用 _isAutoCancelling 包裝以播放 Hand 警告音效與自動撤單
@@ -2336,7 +2323,11 @@ namespace ExtremeSignalAppCS
                 // 當有新增極值觀測列時，非同步強制滾動至最底部，確保 UI 排版完成後執行且保留現有反白狀態
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
                 {
-                    if (dgObserver.Items.Count > 0)
+                    // 當有選取列或有核取方塊打勾時，不跳至最新一列，方便使用者觀察。
+                    bool hasSelection = dgObserver.SelectedItem != null;
+                    bool hasChecked = _obsCollection.Any(x => x.IsChecked);
+
+                    if (!hasSelection && !hasChecked && dgObserver.Items.Count > 0)
                     {
                         dgObserver.ScrollIntoView(dgObserver.Items[^1]);
                     }
@@ -2390,42 +2381,125 @@ namespace ExtremeSignalAppCS
                     item.OrderedSymbol = symbol;
                     item.IsTriggered = false;
                     item.OrderNo = null;
+                    item.IsFilled = false;
 
-                    AppendLog($"【交易】啟動價格監控，當價格來到 A 點價 {item.BestAPrice} 時將自動觸發預掛限價單。商品: {symbol}");
+                    // 同步寫入背景監控清單
+                    lock (_watchListLock)
+                    {
+                        _activeWatchList.RemoveAll(x => x.Key == item.ConfirmedKey);
+                        if (int.TryParse(item.TrigPrice, out int trigP))
+                        {
+                            _activeWatchList.Add(new ActiveWatchItem
+                            {
+                                Key = item.ConfirmedKey,
+                                Symbol = symbol,
+                                Direction = item.Type,
+                                TrigPrice = trigP,
+                                StopLossPrice = item.StopLossPrice,
+                                IsTriggered = false,
+                                IsFilled = false,
+                                OrderNo = null
+                            });
+                        }
+                    }
+
+                    AppendLog($"【交易】啟動價格監控，當價格來到觸發價 {item.TrigPrice} 時將自動觸發預掛限價單。商品: {symbol}");
                     System.Media.SystemSounds.Asterisk.Play(); // 播放啟動監控音效
                 }
                 else
                 {
+                    // 取消監控或觸發平倉/撤單：從背景監控清單中提取成交狀態與商品代碼
+                    bool isFilled = false;
+                    string? orderedSymbol = null;
+                    string? orderNo = null;
+                    lock (_watchListLock)
+                    {
+                        var watchItem = _activeWatchList.FirstOrDefault(x => x.Key == item.ConfirmedKey);
+                        if (watchItem != null)
+                        {
+                            isFilled = watchItem.IsFilled;
+                            orderedSymbol = watchItem.Symbol;
+                            orderNo = watchItem.OrderNo;
+                            _activeWatchList.Remove(watchItem); // 移出清單
+                        }
+                    }
+
+                    // 若未能在監控清單中匹配到 (代表可能是背景先平倉後已移出，或是 UI 重置)，則採用 UI 當前的屬性快照作為備用判定
+                    if (orderedSymbol == null)
+                    {
+                        isFilled = item.IsFilled;
+                        orderedSymbol = item.OrderedSymbol;
+                        orderNo = item.OrderNo;
+                    }
+
                     if (item.IsTriggered)
                     {
-                        // === 已觸發下單，送出撤單委託 ===
-                        if (!string.Empty.Equals(item.OrderNo) && !string.IsNullOrEmpty(item.OrderNo) && !string.IsNullOrEmpty(item.OrderedSymbol))
+                        if (isFilled)
                         {
-                            if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                            // === 已成交 ===
+                            if (_isAutoCancelling)
                             {
-                                AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
-                                return;
+                                // 因停損破價自動取消勾選 -> 送出反向限價平倉單
+                                if (!string.IsNullOrEmpty(orderedSymbol))
+                                {
+                                    if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                                    {
+                                        AppendLog("【交易】平倉失敗：元大交易 API 未登入。");
+                                        return;
+                                    }
+
+                                    string closeBuys = item.Type == "做多" ? "S" : "B"; // 反向平倉
+                                    string closeBuysText = closeBuys == "B" ? "買進" : "賣出";
+                                    int stopLossPrice = item.StopLossPrice;
+                                    // 做多平倉掛低一檔，做空平倉掛高一檔
+                                    int closePrice = item.Type == "做多" ? (stopLossPrice - 1) : (stopLossPrice + 1);
+                                    string qty = "1";
+
+                                    AppendLog($"【交易】偵測到已成交部位，送出反向停損平倉委託！商品: {orderedSymbol} 方向: {closeBuysText} {qty}口 @ {closePrice} (停損防守價: {stopLossPrice})");
+
+                                    // 呼叫元大下單 API 送出平倉限價單 (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
+                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, orderedSymbol, closePrice.ToString(), qty, "0", "L", "R", "", "");
+                                    AppendLog($"【交易】元大 API 平倉下單回傳結果: {ret}");
+                                }
                             }
+                            else
+                            {
+                                // 使用者手動取消勾選 -> 僅移出監控，保留持倉不進行平倉
+                                AppendLog($"【交易】[手動取消監控] 已移出價格監控，保留目前持倉部位不作平倉。商品: {orderedSymbol}");
+                            }
+                        }
+                        else
+                        {
+                            // === 未成交，送出撤單委託 ===
+                            if (!string.IsNullOrEmpty(orderNo) && !string.IsNullOrEmpty(orderedSymbol))
+                            {
+                                if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
+                                {
+                                    AppendLog("【交易】撤單失敗：元大交易 API 未登入。");
+                                    return;
+                                }
 
-                            string buys = item.Type == "做多" ? "B" : "S";
-                            AppendLog($"【交易】送出撤單委託：{item.OrderedSymbol} 委託書號: {item.OrderNo}");
+                                string buys = item.Type == "做多" ? "B" : "S";
+                                AppendLog($"【交易】送出撤單委託：{orderedSymbol} 委託書號: {orderNo}");
 
-                            // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
-                            string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", item.OrderNo, buys, item.OrderedSymbol, "0", "", "", "L", "R", "", "");
-                            AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
+                                // 呼叫元大撤單 API (FCode="03", CommodityType="0", 刪單不帶口數 Qty1="", OffSet="", PriType="L", OrdCond="R")
+                                string ret = _yuantaOrd.SendOrderF("03", "0", _currentBranch, _currentAccount, "", orderNo, buys, orderedSymbol, "0", "", "", "L", "R", "", "");
+                                AppendLog($"【交易】元大 API 撤單回傳結果: {ret}");
+                            }
                         }
                         
                         // 清除相關屬性與觸發狀態
                         item.OrderNo = null;
                         item.OrderedSymbol = null;
                         item.IsTriggered = false;
+                        item.IsFilled = false;
                     }
                     else
                     {
                         // === 未觸發下單，僅取消價格監控 ===
-                        if (!string.IsNullOrEmpty(item.OrderedSymbol))
+                        if (!string.IsNullOrEmpty(orderedSymbol))
                         {
-                            AppendLog($"【交易】取消價格監控：{item.OrderedSymbol} @ A 點價 {item.BestAPrice}");
+                            AppendLog($"【交易】取消價格監控：{orderedSymbol} @ 監控停損價 {item.StopLossPrice}");
                             item.OrderedSymbol = null;
                         }
                     }
@@ -2453,10 +2527,10 @@ namespace ExtremeSignalAppCS
 #pragma warning restore CA1416
 
         /// <summary>
-        /// 觸價監控核心：當最新成交價碰觸或穿過極值 A 點價時，觸發送出限價委託單。
+        /// 觸價監控核心：當最新成交價碰觸或穿過觸發價時，觸發送出限價委託單。
         /// 規則：
-        /// 1. 做空（抓新高反轉）：最新價 >= A 點價 時觸發下單。
-        /// 2. 做多（抓新低反轉）：最新價 <= A 點價 時觸發下單。
+        /// 1. 做空（抓新高反轉）：最新價 >= 觸發價 時觸發下單。
+        /// 2. 做多（抓新低反轉）：最新價 <= 觸發價 時觸發下單。
         /// </summary>
         private void CheckAndTriggerTouchOrders(string symbol, int currentPrice)
         {
@@ -2467,13 +2541,16 @@ namespace ExtremeSignalAppCS
                 if (item.IsChecked && !item.IsTriggered && item.OrderedSymbol == symbol)
                 {
                     bool isTrigger = false;
-                    if (item.Type == "做空" && currentPrice >= item.BestAPrice)
+                    if (int.TryParse(item.TrigPrice, out int trigPrice))
                     {
-                        isTrigger = true;
-                    }
-                    else if (item.Type == "做多" && currentPrice <= item.BestAPrice)
-                    {
-                        isTrigger = true;
+                        if (item.Type == "做空" && currentPrice >= trigPrice)
+                        {
+                            isTrigger = true;
+                        }
+                        else if (item.Type == "做多" && currentPrice <= trigPrice)
+                        {
+                            isTrigger = true;
+                        }
                     }
 
                     if (isTrigger)
@@ -2481,10 +2558,10 @@ namespace ExtremeSignalAppCS
                         item.IsTriggered = true;
                         
                         string buys = item.Type == "做多" ? "B" : "S";
-                        string price = item.BestAPrice.ToString();
+                        string price = item.TrigPrice;
                         string qty = "1";
 
-                        AppendLog($"【交易】價格來到 A 點價，觸發預掛下單委託！商品: {item.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {currentPrice})");
+                        AppendLog($"【交易】價格來到觸發價，觸發預掛下單委託！商品: {item.OrderedSymbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新成交價: {currentPrice})");
 
                         // 檢查 API 登入狀態
                         if (_yuantaOrd == null || string.IsNullOrEmpty(_currentAccount))
@@ -2505,6 +2582,122 @@ namespace ExtremeSignalAppCS
                         // 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
                         string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.OrderedSymbol, price, qty, "0", "L", "R", "", "");
                         AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 背景行情執行緒最優先即時下單與停損監控。
+        /// 完全繞過 UI 執行緒的 Dispatcher，在接收到即時 Tick 的最前端，直接鎖定並遍歷 _activeWatchList 進行判定與 API 下單發送。
+        /// </summary>
+        private void ProcessRealtimeWatchList(string symbol, int currentPrice)
+        {
+            lock (_watchListLock)
+            {
+                for (int i = 0; i < _activeWatchList.Count; i++)
+                {
+                    var item = _activeWatchList[i];
+                    if (item.Symbol != symbol) continue;
+
+                    // 1. 監控建倉下單
+                    if (!item.IsTriggered && !item.IsFilled)
+                    {
+                        bool isTrigger = false;
+                        if (item.Direction == "做空" && currentPrice >= item.TrigPrice)
+                        {
+                            isTrigger = true;
+                        }
+                        else if (item.Direction == "做多" && currentPrice <= item.TrigPrice)
+                        {
+                            isTrigger = true;
+                        }
+
+                        if (isTrigger)
+                        {
+                            item.IsTriggered = true;
+                            string buys = item.Direction == "做多" ? "B" : "S";
+                            string price = item.TrigPrice.ToString();
+                            string qty = "1";
+
+                            // 直接在行情執行緒下單！
+                            if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
+                            {
+                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.Symbol, price, qty, "0", "L", "R", "", "");
+                                string logMsg = $"【交易】[行情執行緒優先] 價格來到觸發價，優先送出建倉委託！商品: {item.Symbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新價: {currentPrice})，回傳結果: {ret}";
+                                Dispatcher.BeginInvoke(new Action(() => AppendLog(logMsg)));
+                                
+                                // 非同步更新 UI 狀態
+                                var key = item.Key;
+                                Dispatcher.BeginInvoke(new Action(() =>
+                                {
+                                    var uiItem = _obsCollection.FirstOrDefault(o => o.ConfirmedKey == key);
+                                    if (uiItem != null)
+                                    {
+                                        uiItem.IsTriggered = true;
+                                        uiItem.OrderedSymbol = item.Symbol;
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                    
+                    // 2. 監控停損平倉下單
+                    if (item.IsTriggered && item.IsFilled)
+                    {
+                        bool isStopLoss = false;
+                        if (item.Direction == "做空" && currentPrice >= item.StopLossPrice + 1)
+                        {
+                            isStopLoss = true;
+                        }
+                        else if (item.Direction == "做多" && currentPrice <= item.StopLossPrice - 1)
+                        {
+                            isStopLoss = true;
+                        }
+
+                        if (isStopLoss)
+                        {
+                            string closeBuys = item.Direction == "做多" ? "S" : "B";
+                            string closeBuysText = closeBuys == "B" ? "買進" : "賣出";
+                            int stopLossPrice = item.StopLossPrice;
+                            int closePrice = item.Direction == "做多" ? (stopLossPrice - 1) : (stopLossPrice + 1);
+                            string qty = "1";
+
+                            if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
+                            {
+                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, item.Symbol, closePrice.ToString(), qty, "0", "L", "R", "", "");
+                                string logMsg = $"【交易】[行情執行緒優先] 價格觸及停損觸發價，優先送出停損平倉委託！商品: {item.Symbol} 方向: {closeBuysText} {qty}口 @ {closePrice} (停損防守價: {item.StopLossPrice}，最新價: {currentPrice})，回傳結果: {ret}";
+                                Dispatcher.BeginInvoke(new Action(() => AppendLog(logMsg)));
+                                
+                                // 從監控清單移除，防止重複下平倉單
+                                _activeWatchList.RemoveAt(i);
+                                i--;
+
+                                // 非同步更新 UI 狀態（取消勾選）
+                                var key = item.Key;
+                                Dispatcher.BeginInvoke(new Action(() =>
+                                {
+                                    var uiItem = _obsCollection.FirstOrDefault(o => o.ConfirmedKey == key);
+                                    if (uiItem != null)
+                                    {
+                                        uiItem.IsFilled = false;
+                                        uiItem.IsTriggered = false;
+                                        uiItem.OrderNo = null;
+                                        uiItem.OrderedSymbol = null;
+                                        
+                                        _isAutoCancelling = true;
+                                        try
+                                        {
+                                            uiItem.IsChecked = false; // 這會觸發 PropertyChanged，但此時已從 watchList 移出，且 IsFilled 已被設為 false，所以不會重複處理
+                                        }
+                                        finally
+                                        {
+                                            _isAutoCancelling = false;
+                                        }
+                                    }
+                                }));
+                            }
+                        }
                     }
                 }
             }
@@ -4195,6 +4388,12 @@ namespace ExtremeSignalAppCS
 
                 // 如果使用者手動（或系統成功）選取了某個項目，就清除待處理的目標
                 _targetHighlightStopLossPrice = null;
+
+                // 只要點選該處呈現反白，A 點價跟觸發價要呈現出高亮桃紅色
+                if (dgObserver.SelectedItem is SimulationResult selectedItem)
+                {
+                    selectedItem.IsTargetPriceHighlighted = true;
+                }
             }
 
             if (dgObserver.SelectedItem is not SimulationResult selected || selected.BestATime == "N/A" || string.IsNullOrEmpty(selected.BestATime))
@@ -5595,6 +5794,28 @@ namespace ExtremeSignalAppCS
                 {
                     UpdatePnLUI(_pnlCalculator.TotalPnL);
                     AppendLog($"【成交回報】大/小臺平倉損益更新。商品: {Symb.Trim()}, 買賣: {Buys.Trim()}, 價格: {price}, 口數: {qty}。累計今日平倉損益: NT$ {_pnlCalculator.TotalPnL}");
+
+                    // 成交時同步將對應的觀測列設為已成交
+                    string orderNo = Order_No.Trim();
+                    if (!string.IsNullOrEmpty(orderNo))
+                    {
+                        var targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                        if (targetItem != null)
+                        {
+                            targetItem.IsFilled = true;
+                            AppendLog($"【交易】成交回報確認：觀測列 {targetItem.DisplayTitle} 已成交。");
+                        }
+
+                        // 同步更新背景監控清單的已成交狀態
+                        lock (_watchListLock)
+                        {
+                            var watchItem = _activeWatchList.FirstOrDefault(x => x.OrderNo == orderNo);
+                            if (watchItem != null)
+                            {
+                                watchItem.IsFilled = true;
+                            }
+                        }
+                    }
                 }));
 
                 // 即時記憶體同步更新當前庫存部位 (僅限符合 TXF/MXF 格式的商品)
@@ -5740,49 +5961,67 @@ namespace ExtremeSignalAppCS
                 bool isFailedOrCancelled = Ts_Code == "05" || Ts_Code == "07" || !string.IsNullOrEmpty(Err_Msg.Trim());
                 if (isFailedOrCancelled)
                 {
+                    string orderNo = Order_No.Trim();
+                    string rawBuys = Buys.Trim().ToUpper();
+                    string rawSBuys = S_Buys.Trim().ToUpper();
+                    bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
+                    string itemType = isBuy ? "做多" : "做空";
+
+                    SimulationResult? targetItem = null;
+
+                    // 1. 優先透過委託書號尋找已綁定的列
+                    if (!string.IsNullOrEmpty(orderNo))
+                    {
+                        targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                    }
+
+                    // 2. 若找不到，試圖透過價格精確匹配
                     double parsedPriceVal = 0;
-                    if (double.TryParse(priceText, out parsedPriceVal))
+                    if (targetItem == null && double.TryParse(priceText, out parsedPriceVal))
                     {
                         int parsedPrice = (int)Math.Round(parsedPriceVal);
-                        string rawBuys = Buys.Trim().ToUpper();
-                        string rawSBuys = S_Buys.Trim().ToUpper();
-                        bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
-                        string itemType = isBuy ? "做多" : "做空";
-                        string orderNo = Order_No.Trim();
+                        targetItem = _obsCollection.FirstOrDefault(o => 
+                            o.IsChecked && 
+                            o.BestAPrice == parsedPrice && 
+                            o.Type == itemType &&
+                            o.OrderedSymbol == symbolText);
+                    }
 
-                        // 優先透過委託書號尋找已綁定的列
-                        SimulationResult? targetItem = null;
-                        if (!string.IsNullOrEmpty(orderNo))
+                    // 3. 若依然找不到 (譬如保證金不足導致 API 未核發書號、回報價格為 0 或空)，
+                    //    則退一步尋找該商品、該方向下，目前已勾選、已觸發且尚未綁定書號的列
+                    if (targetItem == null)
+                    {
+                        targetItem = _obsCollection.FirstOrDefault(o =>
+                            o.IsChecked &&
+                            o.IsTriggered &&
+                            string.IsNullOrEmpty(o.OrderNo) &&
+                            o.Type == itemType &&
+                            o.OrderedSymbol == symbolText);
+                    }
+
+                    if (targetItem != null)
+                    {
+                        AppendLog($"【交易】因委託回報為失敗/取消狀態 ({statusText})，自動取消觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} 的勾選。");
+                        
+                        // 同步移出背景監控清單
+                        lock (_watchListLock)
                         {
-                            targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == orderNo);
+                            _activeWatchList.RemoveAll(x => x.Key == targetItem.ConfirmedKey);
                         }
 
-                        // 若找不到 (例如直接委託失敗，API未核發書號)，則以已勾選且尚未綁定書號的價格、方向與商品進行匹配
-                        if (targetItem == null)
+                        // 先清空 OrderNo 與 OrderedSymbol，防止 PropertyChanged 事件重覆觸發 API 撤單
+                        targetItem.OrderNo = null;
+                        targetItem.OrderedSymbol = null;
+                        targetItem.IsFilled = false;
+                        
+                        _isAutoCancelling = true;
+                        try
                         {
-                            targetItem = _obsCollection.FirstOrDefault(o => 
-                                o.IsChecked && 
-                                o.BestAPrice == parsedPrice && 
-                                o.Type == itemType &&
-                                o.OrderedSymbol == symbolText);
+                            targetItem.IsChecked = false;
                         }
-
-                        if (targetItem != null)
+                        finally
                         {
-                            AppendLog($"【交易】因委託回報為失敗/取消狀態 ({statusText})，自動取消觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} 的勾選。");
-                            // 先清空 OrderNo 與 OrderedSymbol，防止 PropertyChanged 事件重覆觸發 API 撤單
-                            targetItem.OrderNo = null;
-                            targetItem.OrderedSymbol = null;
-                            
-                            _isAutoCancelling = true;
-                            try
-                            {
-                                targetItem.IsChecked = false;
-                            }
-                            finally
-                            {
-                                _isAutoCancelling = false;
-                            }
+                            _isAutoCancelling = false;
                         }
                     }
                 }
@@ -5817,6 +6056,20 @@ namespace ExtremeSignalAppCS
                         {
                             targetItem.OrderNo = orderNo;
                             AppendLog($"【交易】成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {parsedPrice}");
+
+                            // 同步將 OrderNo 綁定到背景監控清單
+                            lock (_watchListLock)
+                            {
+                                var watchItem = _activeWatchList.FirstOrDefault(x => 
+                                    string.IsNullOrEmpty(x.OrderNo) && 
+                                    x.Symbol == symbolText && 
+                                    x.Direction == itemType && 
+                                    x.TrigPrice == parsedPrice);
+                                if (watchItem != null)
+                                {
+                                    watchItem.OrderNo = orderNo;
+                                }
+                            }
                         }
                         else
                         {
@@ -5831,6 +6084,19 @@ namespace ExtremeSignalAppCS
                             {
                                 targetItem.OrderNo = orderNo;
                                 AppendLog($"【交易】[容錯比對] 成功將委託書號 {orderNo} 綁定至觀測列：{targetItem.DisplayTitle} @ {targetItem.BestAPrice} (回報價: {parsedPrice})");
+
+                                // 同步將 OrderNo 綁定到背景監控清單
+                                lock (_watchListLock)
+                                {
+                                    var watchItem = _activeWatchList.FirstOrDefault(x => 
+                                        string.IsNullOrEmpty(x.OrderNo) && 
+                                        x.Symbol == symbolText && 
+                                        x.Direction == itemType);
+                                    if (watchItem != null)
+                                    {
+                                        watchItem.OrderNo = orderNo;
+                                    }
+                                }
                             }
                         }
                     }
@@ -5838,6 +6104,42 @@ namespace ExtremeSignalAppCS
                     // 若狀態為成交，自動延遲 500ms 查詢最新庫存，更新當前庫存欄位
                     if (Ts_Code == "06" || Ts_Code == "08" || statusText.Contains("成交"))
                     {
+                        string oNo = Order_No.Trim();
+                        SimulationResult? targetItem = null;
+                        if (!string.IsNullOrEmpty(oNo))
+                        {
+                            targetItem = _obsCollection.FirstOrDefault(o => o.OrderNo == oNo);
+                        }
+                        if (targetItem == null && isPriceParsed)
+                        {
+                            int parsedPrice = (int)Math.Round(parsedPriceVal);
+                            string rawBuys = Buys.Trim().ToUpper();
+                            string rawSBuys = S_Buys.Trim().ToUpper();
+                            bool isBuy = rawBuys == "B" || rawSBuys.Contains("買") || rawSBuys.Contains("B");
+                            string itemType = isBuy ? "做多" : "做空";
+                            targetItem = _obsCollection.FirstOrDefault(o => 
+                                o.IsChecked && 
+                                o.BestAPrice == parsedPrice && 
+                                o.Type == itemType && 
+                                o.OrderedSymbol == symbolText);
+                        }
+
+                        if (targetItem != null)
+                        {
+                            targetItem.IsFilled = true;
+                            AppendLog($"【交易】觀測列確認已成交建倉：{targetItem.DisplayTitle} 商品: {targetItem.OrderedSymbol} 價格: {priceText}");
+                        }
+
+                        // 同步更新背景監控清單的成交狀態
+                        lock (_watchListLock)
+                        {
+                            var watchItem = _activeWatchList.FirstOrDefault(x => x.OrderNo == oNo);
+                            if (watchItem != null)
+                            {
+                                watchItem.IsFilled = true;
+                            }
+                        }
+
                         DispatcherTimerExtensions.RunOnce(() => QueryCurrentPositions(), TimeSpan.FromMilliseconds(500));
                     }
                 }
@@ -5911,4 +6213,19 @@ namespace ExtremeSignalAppCS
             timer.Start();
         }
     }
-}
+
+    /// <summary>
+    /// 背景行情執行緒即時觸發與停損監控用輕量級資料項。
+    /// </summary>
+    public class ActiveWatchItem
+    {
+        public (int Price, string ATime, int ObsN) Key { get; set; }
+        public string Symbol { get; set; } = string.Empty;
+        public string Direction { get; set; } = string.Empty; // "做多" 或 "做空"
+        public int TrigPrice { get; set; }
+        public int StopLossPrice { get; set; }
+        public bool IsTriggered { get; set; }
+        public bool IsFilled { get; set; }
+        public string? OrderNo { get; set; }
+    }
+}

@@ -659,6 +659,7 @@ namespace ExtremeSignalAppCS.Controls
 
             // 3. 初始化透明十字游標層
             _crosshair = new CrosshairOverlay();
+            System.Windows.Controls.Panel.SetZIndex(_crosshair, 99); // 確保十字游標與標籤置於最上層，不被即時價位標籤覆蓋
             Children.Add(_crosshair);
 
             // 4. 初始化置頂開高低收面板 (完全不透明交易暗灰，科幻綠邊框)
@@ -980,7 +981,7 @@ namespace ExtremeSignalAppCS.Controls
             {
                 double newX = _painter.GetCanvasX(_lastHoverIndex, ActualWidth);
                 double newY = _painter.GetCanvasY(_lockedCrosshairPrice, ActualHeight);
-                _crosshair.SetMousePos(new Point(newX, newY));
+                UpdateCrosshair(new Point(newX, newY));
             }
 
             // 若滑鼠正停留在畫面上觀察，則保持顯示游標所指的 K 棒資訊，否則更新顯示最新的一根
@@ -1461,7 +1462,7 @@ namespace ExtremeSignalAppCS.Controls
             }
 
             // 2. 十字游標物理移動
-            _crosshair.SetMousePos(mousePoint);
+            UpdateCrosshair(mousePoint);
             _isMouseInChart = true;
             _isLockedCrosshair = false;
 
@@ -1490,11 +1491,64 @@ namespace ExtremeSignalAppCS.Controls
             }
         }
 
+        private void UpdateCrosshair(Point? pos)
+        {
+            if (pos == null || _candles == null || _candles.Count == 0)
+            {
+                _crosshair.SetMousePos(null);
+                return;
+            }
+
+            double w = ActualWidth;
+            double h = ActualHeight;
+            if (w <= 0 || h <= 0) return;
+
+            string? timeStr = null;
+            int index;
+            double price;
+
+            if (_isLockedCrosshair)
+            {
+                index = _lastHoverIndex;
+                price = _lockedCrosshairPrice;
+            }
+            else
+            {
+                double drawWidth = Math.Max(1.0, w - KLinePainter.RightMargin);
+                double rangeX = _maxX - _minX;
+                double indexFloat = (pos.Value.X / drawWidth) * rangeX + _minX;
+                index = (int)Math.Round(indexFloat);
+
+                double drawHeight = Math.Max(1.0, h - KLinePainter.BottomMargin);
+                double rangeY = _maxY - _minY;
+                price = _maxY - (pos.Value.Y / drawHeight) * rangeY;
+            }
+
+            int safeIndex = Math.Max(0, Math.Min(_candles.Count - 1, index));
+            string tLabel = _candles[safeIndex].TimeLabel;
+            if (!string.IsNullOrEmpty(tLabel))
+            {
+                string[] parts = tLabel.Split('~');
+                timeStr = parts[0].Trim();
+                if (timeStr.Length >= 4 && !timeStr.Contains(':'))
+                {
+                    timeStr = timeStr.Substring(0, 2) + ":" + timeStr.Substring(2, 2);
+                }
+                else if (timeStr.Length >= 5 && timeStr.Contains(':'))
+                {
+                    timeStr = timeStr.Substring(0, 5);
+                }
+            }
+
+            string priceStr = price.ToString("F0");
+            _crosshair.SetMousePos(pos.Value, timeStr, priceStr);
+        }
+
         private void KLineChartControl_MouseLeave(object sender, MouseEventArgs e)
         {
             _isMouseInChart = false;
             // 清空十字游標，資訊面板回歸最新一根 K棒
-            _crosshair.SetMousePos(null);
+            UpdateCrosshair(null);
             if (_candles != null && _candles.Count > 0)
             {
                 ShowKlineInfo(_candles.Count - 1);
@@ -1573,7 +1627,7 @@ namespace ExtremeSignalAppCS.Controls
             {
                 double newX = _painter.GetCanvasX(_lastHoverIndex, ActualWidth);
                 double newY = _painter.GetCanvasY(_lockedCrosshairPrice, ActualHeight);
-                _crosshair.SetMousePos(new Point(newX, newY));
+                UpdateCrosshair(new Point(newX, newY));
             }
         }
 
@@ -1628,7 +1682,6 @@ namespace ExtremeSignalAppCS.Controls
             double x = _painter.GetCanvasX(index, ActualWidth);
             double targetPrice = price ?? (_candles[index].Open + _candles[index].Close) / 2.0;
             double y = _painter.GetCanvasY(targetPrice, ActualHeight);
-            _crosshair.SetMousePos(new Point(x, y));
             _lastHoverIndex = index;
             _isMouseInChart = true;
             _painter.HighlightPrice = price;
@@ -1636,6 +1689,7 @@ namespace ExtremeSignalAppCS.Controls
             
             _isLockedCrosshair = true;
             _lockedCrosshairPrice = targetPrice;
+            UpdateCrosshair(new Point(x, y));
         }
 
         /// <summary>
@@ -1670,11 +1724,11 @@ namespace ExtremeSignalAppCS.Controls
             double x = _painter.GetCanvasX(index, ActualWidth);
             double y = _painter.GetCanvasY(targetPrice, ActualHeight);
             
-            _crosshair.SetMousePos(new Point(x, y));
             _lastHoverIndex = index;
             _isMouseInChart = true;
             _isLockedCrosshair = true;
             _lockedCrosshairPrice = targetPrice;
+            UpdateCrosshair(new Point(x, y));
         }
 
         /// <summary>
@@ -1907,7 +1961,7 @@ namespace ExtremeSignalAppCS.Controls
         /// </summary>
         public void ClearCrosshair()
         {
-            _crosshair.SetMousePos(null);
+            UpdateCrosshair(null);
             _isMouseInChart = false;
             _isLockedCrosshair = false;
             _painter.HighlightPrice = null;

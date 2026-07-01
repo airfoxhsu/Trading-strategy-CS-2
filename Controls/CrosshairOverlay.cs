@@ -14,6 +14,8 @@ namespace ExtremeSignalAppCS.Controls
     public class CrosshairOverlay : FrameworkElement
     {
         private System.Windows.Point? _mousePos;
+        private string? _timeString;
+        private string? _priceString;
         private readonly System.Windows.Media.Pen _sciFiPen;
         private readonly System.Windows.Media.Brush _sciFiBrush;
         private readonly System.Windows.Threading.DispatcherTimer _throttleTimer;
@@ -49,11 +51,13 @@ namespace ExtremeSignalAppCS.Controls
         }
 
         /// <summary>
-        /// 設定目前滑鼠座標，透過 16ms 節流合併重繪。
+        /// 設定目前滑鼠座標與時間/價格文字，透過 16ms 節流合併重繪。
         /// </summary>
-        public void SetMousePos(Point? pos)
+        public void SetMousePos(Point? pos, string? timeStr = null, string? priceStr = null)
         {
             _mousePos = pos;
+            _timeString = timeStr;
+            _priceString = priceStr;
             
             if (!_throttleTimer.IsEnabled)
             {
@@ -91,6 +95,69 @@ namespace ExtremeSignalAppCS.Controls
             finally
             {
                 drawingContext.Pop();
+            }
+
+            // 在 Clip 區之外繪製 X/Y 軸標籤 (灰底白字，14pt，微亮灰外框，帶圓角)
+            double pixelsPerDip = 1.0;
+            try
+            {
+                pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            }
+            catch { }
+
+            var bgBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)); // 好看的深灰色背景
+            var borderPen = new System.Windows.Media.Pen(new SolidColorBrush(Color.FromRgb(110, 110, 115)), 1); // 微亮灰邊框
+            bgBrush.Freeze();
+            borderPen.Freeze();
+
+            var fontTypeface = new Typeface("Segoe UI");
+
+            // 1. 繪製 X 軸時間方框 (置於底部刻度區)
+            if (!string.IsNullOrEmpty(_timeString))
+            {
+                var text = new FormattedText(
+                    _timeString,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Windows.FlowDirection.LeftToRight,
+                    fontTypeface,
+                    14,
+                    System.Windows.Media.Brushes.White,
+                    pixelsPerDip);
+
+                double rectW = text.Width + 12;
+                double rectH = text.Height + 6;
+                double rectX = x - rectW / 2;
+                double rectY = h - bottomMargin + 1; // 稍微向下偏移 1 像素避免貼齊繪圖區邊界
+
+                // 限制 rectX 範圍，防止超出左右邊界
+                rectX = Math.Max(0, Math.Min(w - rightMargin - rectW, rectX));
+
+                drawingContext.DrawRoundedRectangle(bgBrush, borderPen, new Rect(rectX, rectY, rectW, rectH), 3, 3);
+                drawingContext.DrawText(text, new Point(rectX + 6, rectY + 3));
+            }
+
+            // 2. 繪製 Y 軸價位方框 (置於右側刻度區)
+            if (!string.IsNullOrEmpty(_priceString))
+            {
+                var text = new FormattedText(
+                    _priceString,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Windows.FlowDirection.LeftToRight,
+                    fontTypeface,
+                    14,
+                    System.Windows.Media.Brushes.White,
+                    pixelsPerDip);
+
+                double rectW = text.Width + 12;
+                double rectH = text.Height + 6;
+                double rectX = w - rightMargin + 1; // 稍微向右偏移 1 像素避免貼齊繪圖區邊界
+                double rectY = y - rectH / 2;
+
+                // 限制 rectY 範圍，防止超出上下邊界
+                rectY = Math.Max(0, Math.Min(h - bottomMargin - rectH, rectY));
+
+                drawingContext.DrawRoundedRectangle(bgBrush, borderPen, new Rect(rectX, rectY, rectW, rectH), 3, 3);
+                drawingContext.DrawText(text, new Point(rectX + 6, rectY + 3));
             }
         }
     }

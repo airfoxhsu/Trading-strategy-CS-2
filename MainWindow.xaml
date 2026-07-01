@@ -431,7 +431,31 @@
                                 </DataGridTextColumn.CellStyle>
                             </DataGridTextColumn>
                             <DataGridTextColumn Header="B點時間" Binding="{Binding TrigTimeDisplay}" Width="Auto" MinWidth="75"/>
-                            <DataGridTextColumn Header="觸發價" Binding="{Binding TrigPrice}" Width="Auto" MinWidth="55"/>
+                            <DataGridTextColumn Header="觸發價" Binding="{Binding TrigPrice}" Width="Auto" MinWidth="55">
+                                <DataGridTextColumn.CellStyle>
+                                    <Style TargetType="DataGridCell">
+                                        <Setter Property="BorderThickness" Value="0" />
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="Padding" Value="5,0" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="DataGridCell">
+                                                    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                                                        <ContentPresenter VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTargetPriceHighlighted}" Value="True">
+                                                <Setter Property="Background" Value="#FF00FF" />
+                                                <Setter Property="Foreground" Value="White" />
+                                                <Setter Property="FontWeight" Value="Bold" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.CellStyle>
+                            </DataGridTextColumn>
                             <DataGridTextColumn Header="前向平均" Binding="{Binding Pre}" Width="Auto" MinWidth="65"/>
                             <DataGridTextColumn Header="後向平均" Binding="{Binding Post}" Width="Auto" MinWidth="65"/>
                             <DataGridTextColumn Header="停損價" Binding="{Binding StopLossDisplay}" Width="Auto" MinWidth="95"/>
