@@ -2267,7 +2267,7 @@ namespace ExtremeSignalAppCS
 
                                 if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
                                 {
-                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, current.OrderedSymbol, price, qty, "0", "L", "R", "", "");
+                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, current.OrderedSymbol, price, qty, "", "L", "R", "", "");
                                     AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
                                 }
                                 else
@@ -2340,6 +2340,7 @@ namespace ExtremeSignalAppCS
                     item.PropertyChanged -= ObsItem_PropertyChanged;
                 }
             }
+            UpdateActionButtonsState();
         }
 
         private bool _isHandlingPropertyChange = false;
@@ -2457,8 +2458,8 @@ namespace ExtremeSignalAppCS
 
                                     AppendLog($"【交易】偵測到已成交部位，送出反向停損平倉委託！商品: {orderedSymbol} 方向: {closeBuysText} {qty}口 @ {closePrice} (停損防守價: {stopLossPrice})");
 
-                                    // 呼叫元大下單 API 送出平倉限價單 (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
-                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, orderedSymbol, closePrice.ToString(), qty, "0", "L", "R", "", "");
+                                    // 呼叫元大下單 API 送出平倉限價單 (FCode="01", CommodityType="0"代表期貨, OffSet="", PriType="L"限價, OrdCond="R"ROD)
+                                    string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, orderedSymbol, closePrice.ToString(), qty, "", "L", "R", "", "");
                                     AppendLog($"【交易】元大 API 平倉下單回傳結果: {ret}");
                                 }
                             }
@@ -2522,9 +2523,96 @@ namespace ExtremeSignalAppCS
             finally
             {
                 _isHandlingPropertyChange = false;
+                UpdateActionButtonsState();
             }
         }
 #pragma warning restore CA1416
+
+        private void UpdateActionButtonsState()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateActionButtonsState));
+                return;
+            }
+            bool hasChecked = _obsCollection.Any(x => x.IsChecked);
+            btnCancelAll.IsEnabled = hasChecked;
+            btnSearchOrder.IsEnabled = hasChecked;
+        }
+
+        private void BtnCancelAll_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var obs in _obsCollection)
+            {
+                if (obs.IsChecked)
+                {
+                    obs.IsChecked = false;
+                }
+            }
+            UpdateActionButtonsState();
+        }
+
+        private void BtnSearchOrder_Click(object sender, RoutedEventArgs e)
+        {
+            var checkedItems = _obsCollection.Where(x => x.IsChecked).ToList();
+            if (checkedItems.Count == 0) return;
+
+            SimulationResult? currentSelected = dgObserver.SelectedItem as SimulationResult;
+            SimulationResult? targetObs = null;
+
+            if (currentSelected != null && checkedItems.Contains(currentSelected))
+            {
+                int index = checkedItems.IndexOf(currentSelected);
+                int nextIndex = (index + 1) % checkedItems.Count;
+                targetObs = checkedItems[nextIndex];
+            }
+            else
+            {
+                targetObs = checkedItems[0];
+            }
+
+            if (targetObs != null)
+            {
+                _isProgrammaticSelection = true;
+                _isNavigatingToHighlight = true;
+                dgObserver.SelectedItem = targetObs;
+                _isNavigatingToHighlight = false;
+
+                // 第一層防護：強制更新 UI 佈局
+                dgObserver.UpdateLayout();
+                dgObserver.ScrollIntoView(targetObs);
+
+                // 第二層防護：延遲執行，確保 WPF VirtualizingStackPanel 真正生成項目後置中捲動
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    dgObserver.ScrollIntoView(targetObs);
+                    dgObserver.UpdateLayout();
+
+                    // 尋找 ScrollViewer 並計算置中
+                    var scrollViewer = GetVisualChild<ScrollViewer>(dgObserver);
+                    if (scrollViewer != null)
+                    {
+                        double targetIndex = dgObserver.Items.IndexOf(targetObs);
+                        if (targetIndex != -1)
+                        {
+                            bool isItemBased = Math.Abs(scrollViewer.ExtentHeight - dgObserver.Items.Count) < 5;
+                            if (isItemBased)
+                            {
+                                double centerOffset = targetIndex - (scrollViewer.ViewportHeight / 2.0);
+                                scrollViewer.ScrollToVerticalOffset(Math.Max(0, centerOffset));
+                            }
+                            else
+                            {
+                                double avgRowHeight = scrollViewer.ExtentHeight / dgObserver.Items.Count;
+                                double targetPixelOffset = (targetIndex * avgRowHeight) - (scrollViewer.ViewportHeight / 2.0);
+                                scrollViewer.ScrollToVerticalOffset(Math.Max(0, targetPixelOffset));
+                            }
+                        }
+                    }
+                    _isProgrammaticSelection = false;
+                }), System.Windows.Threading.DispatcherPriority.ContextIdle);
+            }
+        }
 
         /// <summary>
         /// 觸價監控核心：當最新成交價碰觸或穿過觸發價時，觸發送出限價委託單。
@@ -2579,8 +2667,8 @@ namespace ExtremeSignalAppCS
                             continue;
                         }
 
-                        // 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="0", PriType="L"限價, OrdCond="R"ROD)
-                        string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.OrderedSymbol, price, qty, "0", "L", "R", "", "");
+                        // 呼叫元大下單 API (FCode="01", CommodityType="0"代表期貨, OffSet="", PriType="L"限價, OrdCond="R"ROD)
+                        string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.OrderedSymbol, price, qty, "", "L", "R", "", "");
                         AppendLog($"【交易】元大 API 觸發下單回傳結果: {ret}");
                     }
                 }
@@ -2623,7 +2711,7 @@ namespace ExtremeSignalAppCS
                             // 直接在行情執行緒下單！
                             if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
                             {
-                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.Symbol, price, qty, "0", "L", "R", "", "");
+                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", buys, item.Symbol, price, qty, "", "L", "R", "", "");
                                 string logMsg = $"【交易】[行情執行緒優先] 價格來到觸發價，優先送出建倉委託！商品: {item.Symbol} 方向: {(buys == "B" ? "買進" : "賣出")} {qty}口 @ {price} (最新價: {currentPrice})，回傳結果: {ret}";
                                 Dispatcher.BeginInvoke(new Action(() => AppendLog(logMsg)));
                                 
@@ -2665,7 +2753,7 @@ namespace ExtremeSignalAppCS
 
                             if (_yuantaOrd != null && !string.IsNullOrEmpty(_currentAccount))
                             {
-                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, item.Symbol, closePrice.ToString(), qty, "0", "L", "R", "", "");
+                                string ret = _yuantaOrd.SendOrderF("01", "0", _currentBranch, _currentAccount, "", "", closeBuys, item.Symbol, closePrice.ToString(), qty, "", "L", "R", "", "");
                                 string logMsg = $"【交易】[行情執行緒優先] 價格觸及停損觸發價，優先送出停損平倉委託！商品: {item.Symbol} 方向: {closeBuysText} {qty}口 @ {closePrice} (停損防守價: {item.StopLossPrice}，最新價: {currentPrice})，回傳結果: {ret}";
                                 Dispatcher.BeginInvoke(new Action(() => AppendLog(logMsg)));
                                 
