@@ -1,17 +1,22 @@
 ---
 name: yuanta-api-reference
-description: 當涉及元大 API 有關行情或者是交易連線的問題時，提供相關規格書與文件的指引。
+description: 元大 API 參考文件指南，提供關於元大 API 行情接收、交易格式、連線與錯誤代碼的 PDF 參考文檔路徑與操作指南。
 ---
 
-# 元大 API 行情與交易連線問題指引
+# 元大 API 參考文件指南
 
-當在專案中遇到元大 API 的行情接收或交易連線問題時，請參考專案目錄下 `元大API_PDF` 資料夾內的規格書文件：
+當處理與元大 API 有關的行情、交易格式、或者是連線與帳務問題時，請優先參考 `./元大API_PDF` 目錄下的兩個 PDF 文件：
 
-- **行情連線與行情接收問題**：
-  請參考 [元大行情API.pdf](file:///h:/Coding/CSharp/Trading-strategy-CS-2/元大API_PDF/元大行情API.pdf) 檔案。
-- **交易連線與交易委託問題**：
-  請參考 [元大BToCAPI格式.pdf](file:///h:/Coding/CSharp/Trading-strategy-CS-2/元大API_PDF/元大BToCAPI格式.pdf) 檔案。
+- **行情相關問題**（如 Tick 接收、K 線訂閱、商品訂閱、行情連線）：
+  請參考 [元大行情API.pdf](file:///h:/Coding/CSharp/Trading-strategy-CS-2/元大API_PDF/元大行情API.pdf)
+  
+- **交易格式與連線問題**（如 API 下單、撤改單、交易封包格式、帳務登入、委託回報）：
+  請參考 [元大BToCAPI格式.pdf](file:///h:/Coding/CSharp/Trading-strategy-CS-2/元大API_PDF/元大BToCAPI格式.pdf)
 
 ## 常用操作指引
-1. 在診斷行情遺漏、K線計算錯誤、Tick 接收不完整等問題時，應先查閱行情 API 的規格，確認封包格式與事件觸發機制。
-2. 在診斷下單失敗、回報序號不符、帳務登入等交易問題時，應先查閱 BToC API 格式，確認欄位長度、回報代碼（如 "04"、"03" 等）之定義。
+
+1. **行情模組開發與除錯**：
+   - 當行情接收異常或欄位格式不符合預期時，查閱 `元大行情API.pdf` 中關於行情 API 的通訊協定與欄位定義。
+   
+2. **交易回報與下單狀態排查**：
+   - 當遇到特定的 API 傳回值（如錯誤代碼）或需要對齊委託/成交回報的欄位格式時，查閱 `元大BToCAPI格式.pdf` 的交易訊息格式說明。
