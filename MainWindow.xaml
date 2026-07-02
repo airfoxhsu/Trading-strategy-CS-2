@@ -493,6 +493,14 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,30,0">
                     <Button x:Name="btnCancelAll" Content="全部取消" Click="BtnCancelAll_Click" IsEnabled="False" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <Button x:Name="btnSearchOrder" Content="依序搜尋" Click="BtnSearchOrder_Click" IsEnabled="False" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <Label Content="停利方式:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox x:Name="cboProfitMode" MinWidth="155" VerticalAlignment="Center" Margin="0,0,16,0" SelectionChanged="CboProfitMode_SelectionChanged">
+                        <ComboBoxItem x:Name="cboItemHand" Content="手動設定" IsSelected="True"/>
+                        <ComboBoxItem x:Name="cboItemSingleCost" Content="成本價"/>
+                        <ComboBoxItem x:Name="cboItemBE" Content="損益平衡點"/>
+                        <ComboBoxItem x:Name="cboItem100" Content="賺 100 點"/>
+                        <ComboBoxItem x:Name="cboItem200" Content="賺 200 點"/>
+                    </ComboBox>
                     <Label Content="下單品種:" Foreground="White" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <RadioButton x:Name="rbTX" Content="大臺" Foreground="White" GroupName="SymbolGroup" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <RadioButton x:Name="rbMTX" Content="小臺" Foreground="White" GroupName="SymbolGroup" IsChecked="True" VerticalAlignment="Center"/>

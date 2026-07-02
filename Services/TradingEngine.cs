@@ -1169,6 +1169,28 @@ namespace ExtremeSignalAppCS.Services
                     }
 
                     int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
+
+                    // 第一關：相鄰極值過濾 (左右各 1 Tick)
+                    if (aIdx > 0 && aPrice < trades[aIdx - 1].Price) continue;
+                    if (aIdx < totalTradesCount - 1 && aPrice < trades[aIdx + 1].Price) continue;
+
+                    // 第二關：動態 N 區間過濾 (左右各 currentN Tick)
+                    bool isInvalid = false;
+                    int checkLeftLimit = Math.Max(0, aIdx - currentN);
+                    for (int i = aIdx - 1; i >= checkLeftLimit; i--)
+                    {
+                        if (trades[i].Price > aPrice) { isInvalid = true; break; }
+                    }
+                    if (!isInvalid)
+                    {
+                        int checkRightLimit = Math.Min(totalTradesCount - 1, aIdx + currentN);
+                        for (int i = aIdx + 1; i <= checkRightLimit; i++)
+                        {
+                            if (trades[i].Price > aPrice) { isInvalid = true; break; }
+                        }
+                    }
+                    if (isInvalid) continue;
+
                     var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, lastIdx) =
                         GetDurationsFull(trades, currentN, aIdx, TradeSide.Outer, TradeSide.Inner, totalTradesCount);
 
@@ -1227,6 +1249,28 @@ namespace ExtremeSignalAppCS.Services
                     }
 
                     int currentN = useDynamicN && dynamicNMap != null ? dynamicNMap[aIdx] : obsN;
+
+                    // 第一關：相鄰極值過濾 (左右各 1 Tick)
+                    if (aIdx > 0 && aPrice > trades[aIdx - 1].Price) continue;
+                    if (aIdx < totalTradesCount - 1 && aPrice > trades[aIdx + 1].Price) continue;
+
+                    // 第二關：動態 N 區間過濾 (左右各 currentN Tick)
+                    bool isInvalid = false;
+                    int checkLeftLimit = Math.Max(0, aIdx - currentN);
+                    for (int i = aIdx - 1; i >= checkLeftLimit; i--)
+                    {
+                        if (trades[i].Price < aPrice) { isInvalid = true; break; }
+                    }
+                    if (!isInvalid)
+                    {
+                        int checkRightLimit = Math.Min(totalTradesCount - 1, aIdx + currentN);
+                        for (int i = aIdx + 1; i <= checkRightLimit; i++)
+                        {
+                            if (trades[i].Price < aPrice) { isInvalid = true; break; }
+                        }
+                    }
+                    if (isInvalid) continue;
+
                     var (pre, preVol, post, postVol, threshold, trigTime, trigPrice, actPre, actPost, lastIdx) =
                         GetDurationsFull(trades, currentN, aIdx, TradeSide.Inner, TradeSide.Outer, totalTradesCount);
 
