@@ -120,6 +120,7 @@ namespace ExtremeSignalAppCS
         private bool _isRecovering; // 標記網路中斷重新連線後的歷史行情回補，避免重發推播
         private bool _wasPlayingBeforeDrag;
         private bool _skipNextPreload; // 標記自動換盤後跳過預載
+        private string? _lastAutoSelectedHvnKey; // 記錄上一次自動跳轉的強 (HVN) 極值唯一的 Key，避免重覆跳轉
 
         // 快取與狀態變數
         private readonly HashSet<(string Symbol, string Session, string Type, int Price, string ATime)> _rtNotifiedKeys = [];
@@ -2169,6 +2170,7 @@ namespace ExtremeSignalAppCS
                 t.PrevLow = s.PrevLow;
                 t.BIndex = s.BIndex;
                 t.ObsN = s.ObsN;
+                t.IsHVN = s.IsHVN;
                 t.UpdateTags(s.Tags);
             });
 
@@ -2201,6 +2203,24 @@ namespace ExtremeSignalAppCS
             RefreshObserverComboboxes();
 
             ApplyTargetHighlight();
+
+            // 7/2 自動跳轉邏輯：若最新的一列極值為強 (HVN) 信號，且為新信號，則強制選取並滾動
+            if (_obsCollection.Count > 0)
+            {
+                var latest = _obsCollection[^1];
+                if (latest.IsHVN)
+                {
+                    string currentKey = $"{latest.BestATime}_{latest.BestAPrice}_{latest.ObsN}_{latest.Type}";
+                    if (_lastAutoSelectedHvnKey != currentKey)
+                    {
+                        _lastAutoSelectedHvnKey = currentKey;
+                        _isRestoringSelection = true;
+                        dgObserver.SelectedItem = latest;
+                        dgObserver.ScrollIntoView(latest);
+                        _isRestoringSelection = false;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -2662,7 +2682,7 @@ namespace ExtremeSignalAppCS
                 {
                     // 無部位時，還原為預設文字
                     cboItemSingleCost.Content = "成本價";
-                    cboItemBE.Content = "損益平衡點";
+                    cboItemBE.Content = "今日損平點";
                     cboItem100.Content = "賺 100 點";
                     cboItem200.Content = "賺 200 點";
                     return;
@@ -4134,11 +4154,25 @@ namespace ExtremeSignalAppCS
 
             string activeSession = _currentRealtimePort == 442 ? "夜盤" : "日盤";
 
+            Func<double, bool> timeFilter = tValRaw =>
+            {
+                if (activeSession == "夜盤")
+                {
+                    // 如果目前時間是中午 12 點之後 (下午夜盤剛開盤)，
+                    // 我們只預載今天下午 (>= 14:30，即 52200 秒) 之後的資料，過濾掉今天凌晨 (<= 18000 秒) 屬於上一交易日夜盤的舊資料。
+                    if (DateTime.Now.TimeOfDay >= new TimeSpan(12, 0, 0))
+                    {
+                        return tValRaw >= 52200.0;
+                    }
+                }
+                return true;
+            };
+
             Task.Run(() =>
             {
                 try
                 {
-                    var filePaths = new[] { (todayLog, (Func<double, bool>)(t => true)) };
+                    var filePaths = new[] { (todayLog, timeFilter) };
                     var (success, result, status) = RunAnalysisSync(filePaths, "MXF", _currentTargetDays, ignoreTimeCheck: true);
 
                     Dispatcher.BeginInvoke(new Action(() =>
@@ -4798,7 +4832,7 @@ namespace ExtremeSignalAppCS
 
             if (selected.StopLossDisplay != "N/A" && selected.StopLossPrice > 0)
             {
-                klineChart?.SetObserverStopLossPrice(selected.StopLossPrice, direction);
+                klineChart?.SetObserverStopLossPrice(selected.StopLossPrice, direction, selected.IsHVN);
             }
             else
             {
@@ -6646,4 +6680,4 @@ namespace ExtremeSignalAppCS
         public bool IsFilled { get; set; }
         public string? OrderNo { get; set; }
     }
-}
+}

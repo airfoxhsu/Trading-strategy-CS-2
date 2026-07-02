@@ -49,7 +49,21 @@ namespace ExtremeSignalAppCS.Controls
         private readonly Brush _lowTextBrush = new SolidColorBrush(Color.FromRgb(40, 167, 69));
         private readonly Pen _highlightPen = new(new SolidColorBrush(Color.FromRgb(255, 255, 255)), 2.0);
         private readonly Pen _stopLossPen = new(new SolidColorBrush(Color.FromRgb(255, 215, 0)), 1.5);
-        private readonly Pen _observerStopLossPen = new(new SolidColorBrush(Color.FromRgb(255, 0, 255)), 2.0);
+        private readonly Pen _observerStopLossPen = new(new SolidColorBrush(Color.FromRgb(255, 0, 255)), 1.5);
+        
+        private bool _isObserverHVN;
+        /// <summary>
+        /// 標記選取的極值點是否為高成交量密集區 (HVN)
+        /// </summary>
+        public bool IsObserverHVN
+        {
+            get => _isObserverHVN;
+            set
+            {
+                _isObserverHVN = value;
+                InvalidateVisual();
+            }
+        }
         
         private readonly Pen _positionProfitPen = new(new SolidColorBrush(Color.FromRgb(235, 75, 75)), 1.5);
         private readonly Pen _positionLossPen = new(new SolidColorBrush(Color.FromRgb(40, 167, 69)), 1.5);
@@ -1704,8 +1718,9 @@ namespace ExtremeSignalAppCS.Controls
         /// <summary>
         /// 設定極值觀測表選取的停損價格桃紅色橫線與方向
         /// </summary>
-        public void SetObserverStopLossPrice(double? stopLossPrice, int direction = 0)
+        public void SetObserverStopLossPrice(double? stopLossPrice, int direction = 0, bool isHVN = false)
         {
+            _painter.IsObserverHVN = isHVN;
             _painter.ObserverStopLossPrice = stopLossPrice;
             _painter.HighlightDirection = direction;
         }

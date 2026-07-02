@@ -41,6 +41,24 @@ namespace ExtremeSignalAppCS.Models
         private string? _orderedSymbol;
         private bool _isTriggered;
         private bool _isFilled;
+        private bool _isHVN;
+
+        public bool IsHVN
+        {
+            get => _isHVN;
+            set
+            {
+                if (SetField(ref _isHVN, value))
+                {
+                    OnPropertyChanged(nameof(VolumeStrength));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 籌碼強度顯示文字
+        /// </summary>
+        public string VolumeStrength => IsHVN ? "強 (HVN)" : "一般";
 
         /// <summary>
         /// 顯示標籤 (如 "N=25 抓新高反轉")

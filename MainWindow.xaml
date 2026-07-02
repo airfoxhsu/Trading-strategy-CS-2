@@ -404,6 +404,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="類型" Binding="{Binding DisplayTitle}" Width="*" MinWidth="100"/>
+                            <DataGridTextColumn Header="籌碼強度" Binding="{Binding VolumeStrength}" Width="Auto" MinWidth="80"/>
                             <DataGridTextColumn Header="A點時間" Binding="{Binding BestATimeDisplay}" Width="Auto" MinWidth="75"/>
                             <DataGridTextColumn Header="A點價" Binding="{Binding BestAPrice}" Width="Auto" MinWidth="55">
                                 <DataGridTextColumn.CellStyle>

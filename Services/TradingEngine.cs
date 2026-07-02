@@ -1144,6 +1144,26 @@ namespace ExtremeSignalAppCS.Services
             var results = new List<SimulationResult>();
             if (totalTradesCount == 0) return results;
 
+            // 建立 Volume Profile (每 5 點為一個區間 Bin)
+            var volumeProfile = new Dictionary<int, long>();
+            for (int i = 0; i < totalTradesCount; i++)
+            {
+                int bin = trades[i].Price / 5;
+                volumeProfile[bin] = volumeProfile.GetValueOrDefault(bin, 0) + trades[i].Qty;
+            }
+
+            // 計算所有已成交區間的平均成交量
+            double avgVolume = 0;
+            if (volumeProfile.Count > 0)
+            {
+                long totalVolumeSum = 0;
+                foreach (var vol in volumeProfile.Values)
+                {
+                    totalVolumeSum += vol;
+                }
+                avgVolume = (double)totalVolumeSum / volumeProfile.Count;
+            }
+
             string cacheKey = $"{session}_{obsN}_{useDynamicN}";
             if (_globalSimSessionKey != cacheKey)
             {
@@ -1199,6 +1219,13 @@ namespace ExtremeSignalAppCS.Services
                         var key = (aPrice, trades[aIdx].Time, currentN);
                         if (!_globalAggregatedRawResults.Any(k => k.Key == key && k.Raw.Type == "做空"))
                         {
+                            // 判定此 A 點價格是否為高成交量密集區 (HVN)
+                            int aBin = aPrice / 5;
+                            long vCur = volumeProfile.GetValueOrDefault(aBin, 0);
+                            long vPrev = volumeProfile.GetValueOrDefault(aBin - 1, 0);
+                            long vNext = volumeProfile.GetValueOrDefault(aBin + 1, 0);
+                            bool isHVN = (vCur > vPrev && vCur > vNext) && (vCur > avgVolume * 1.5);
+
                             var raw = new SimulationResult
                             {
                                 Type = "做空",
@@ -1213,7 +1240,8 @@ namespace ExtremeSignalAppCS.Services
                                 PrevLow = aPrice,
                                 BIndex = lastIdx,
                                 ObsN = currentN,
-                                StopLossPrice = aPrice // 停損防守價直接設為 A 點
+                                StopLossPrice = aPrice, // 停損防守價直接設為 A 點
+                                IsHVN = isHVN
                             };
                             _globalAggregatedRawResults.Add((key, raw, new List<string> { "obs_high" }));
                             _globalLastTriggeredAPriceShort = aPrice; // 記錄以過濾後續同價 A 點
@@ -1279,6 +1307,13 @@ namespace ExtremeSignalAppCS.Services
                         var key = (aPrice, trades[aIdx].Time, currentN);
                         if (!_globalAggregatedRawResults.Any(k => k.Key == key && k.Raw.Type == "做多"))
                         {
+                            // 判定此 A 點價格是否為高成交量密集區 (HVN)
+                            int aBin = aPrice / 5;
+                            long vCur = volumeProfile.GetValueOrDefault(aBin, 0);
+                            long vPrev = volumeProfile.GetValueOrDefault(aBin - 1, 0);
+                            long vNext = volumeProfile.GetValueOrDefault(aBin + 1, 0);
+                            bool isHVN = (vCur > vPrev && vCur > vNext) && (vCur > avgVolume * 1.5);
+
                             var raw = new SimulationResult
                             {
                                 Type = "做多",
@@ -1293,7 +1328,8 @@ namespace ExtremeSignalAppCS.Services
                                 PrevLow = aPrice, // 貪婪停損直接設為 A 點
                                 BIndex = lastIdx,
                                 ObsN = currentN,
-                                StopLossPrice = aPrice // 停損防守價直接設為 A 點
+                                StopLossPrice = aPrice, // 停損防守價直接設為 A 點
+                                IsHVN = isHVN
                             };
                             _globalAggregatedRawResults.Add((key, raw, new List<string> { "obs_low" }));
                             _globalLastTriggeredAPriceLong = aPrice; // 記錄以過濾後續同價 A 點
@@ -1330,7 +1366,8 @@ namespace ExtremeSignalAppCS.Services
                     PrevLow = k.Raw.PrevLow,
                     BIndex = k.Raw.BIndex,
                     ObsN = k.Raw.ObsN,
-                    StopLossPrice = k.Raw.StopLossPrice
+                    StopLossPrice = k.Raw.StopLossPrice,
+                    IsHVN = k.Raw.IsHVN
                 };
                 foreach (var tag in k.Tags)
                     copy.Tags.Add(tag);
@@ -1454,7 +1491,8 @@ namespace ExtremeSignalAppCS.Services
                     ObsN = raw.ObsN,
                     StopLossPrice = lockedSL ?? 0,
                     IsBroken = isBrokenGreedy,
-                    BreakTime = breakTime
+                    BreakTime = breakTime,
+                    IsHVN = raw.IsHVN
                 };
 
                 results.Add(finalResult);
